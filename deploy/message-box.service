@@ -1,0 +1,35 @@
+[Unit]
+Description=Message Box voice notes
+After=network-online.target sound.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=8
+
+[Service]
+Type=simple
+User=messagebox
+Group=messagebox
+SupplementaryGroups=gpio audio plugdev
+UMask=0077
+WorkingDirectory=/opt/message-box
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MESSAGEBOX_CONFIG=/etc/message-box/config.toml
+# Read by systemd as root, then the process is started as `messagebox`.
+# The token never needs to be in a file the service user can read.
+EnvironmentFile=/etc/message-box/env
+ExecStart=/opt/message-box/venv/bin/python -m messagebox run
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=message-box
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/message-box
+
+[Install]
+WantedBy=multi-user.target

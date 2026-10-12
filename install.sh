@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Install Message Box on a Raspberry Pi (64-bit Bookworm or newer).
+# Safe to run again after a git pull. It will not overwrite the token file
+# or the config once they exist.
+set -euo pipefail
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Run this as root: sudo ./install.sh" >&2
+  exit 1
+fi
+
+umask 022
+
+SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="/opt/message-box"
+VENV="${INSTALL_DIR}/venv"
+ENV_FILE="/etc/message-box/env"
+CONFIG_FILE="/etc/message-box/config.toml"
+DATA_DIR="/var/lib/message-box"
+
+echo "Installing apt packages..."
+apt-get update
+apt-get install -y \
+  ffmpeg \
+  alsa-utils \
+  python3-venv \
+  python3-pip \
+  python3-lgpio \
+  ca-certificates
+
+echo "Copying the program to ${INSTALL_DIR}..."
+mkdir -p "${INSTALL_DIR}"
+if [[ "${SOURCE}" != "${INSTALL_DIR}" ]]; then
+  tar -C "${SOURCE}" \
+    --exclude .git \
+    --exclude .venv \
+    --exclude venv \
+    --exclude data \
+    --exclude __pycache__ \
+    --exclude .pytest_cache \
+    --exclude .env \
+    --exclude config.toml \
+    -cf - . | tar -C "${INSTALL_DIR}" -xf -
+fi
+
+echo "Creating the Python virtual environment..."
+python3 -m venv --system-site-packages "${VENV}"
+"${VENV}/bin/pip" install --upgrade pip
+"${VENV}/bin/pip" install "${INSTALL_DIR}"
+
+if ! "${VENV}/bin/python" -c "import lgpio" >/dev/null 2>&1; then
+  arch="$(uname -m)"
+  if [[ "${arch}" == "aarch64" || "${arch}" == "armv7l" ]]; then
+    echo "The apt lgpio module was not visible. Trying pip..."
+    "${VENV}/bin/pip" install "lgpio>=0.2.2.0"
+  else
+    echo "Note: lgpio is not installed. That is normal on a laptop; GPIO works on the Pi."
+  fi
+fi
+
+if ! id messagebox >/dev/null 2>&1; then
+  echo "Creating the messagebox user..."
+  useradd \
+    --system \
+    --create-home \
+    --home-dir "${DATA_DIR}" \
+    --shell /usr/sbin/nologin \
+    messagebox
+fi
+
+for group in audio gpio plugdev; do
+  if getent group "${group}" >/dev/null; then
+    usermod -a -G "${group}" messagebox
+  else
+    echo "Group ${group} does not exist on this machine; skipping it."
+  fi
+done
+
+mkdir -p /etc/message-box
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  cp "${INSTALL_DIR}/config.example.toml" "${CONFIG_FILE}"
+  chmod 644 "${CONFIG_FILE}"
+  echo "Wrote ${CONFIG_FILE}"
+else
+  echo "Left existing ${CONFIG_FILE} in place."
+fi
+
+if [[ ! -f "${ENV_FILE}" ]]; then
+  printf '%s\n' '# Bot token from @BotFather. One line, no quotes.' 'TELEGRAM_BOT_TOKEN=' > "${ENV_FILE}"
+  echo "Wrote ${ENV_FILE}"
+fi
+chown root:root "${ENV_FILE}"
+chmod 600 "${ENV_FILE}"
+
+mkdir -p "${DATA_DIR}"
+chown -R messagebox:messagebox "${DATA_DIR}"
+chmod 700 "${DATA_DIR}"
+
+cp "${INSTALL_DIR}/deploy/message-box.service" /etc/systemd/system/message-box.service
+systemctl daemon-reload
+systemctl enable message-box.service
+
+echo
+if grep -Eq '^[[:space:]]*TELEGRAM_BOT_TOKEN=.+$' "${ENV_FILE}"; then
+  systemctl restart message-box.service
+  echo "Service restarted."
+  echo "Logs: journalctl -u message-box -f"
+else
+  echo "The token is still empty, so the service was enabled but not started."
+  echo "1. Edit ${ENV_FILE} and set TELEGRAM_BOT_TOKEN."
+  echo "2. Edit ${CONFIG_FILE} and set allowed_chat_ids (see the README)."
+  echo "3. sudo systemctl restart message-box"
+fi
+echo
+echo "Bench test the mic and speaker with:"
+echo "  sudo -u messagebox ${VENV}/bin/python -m messagebox --check-audio"

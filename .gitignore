@@ -1,0 +1,24 @@
+# Secrets and local configuration. The bot token never belongs in git.
+.env
+.env.local
+.env.*.local
+config.toml
+/env
+
+# Runtime audio and queues
+data/
+var/
+*.ogg
+*.wav
+*.partial
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+dist/
+build/

@@ -1,0 +1,75 @@
+# Message Box configuration.
+#
+# The installer copies this file to /etc/message-box/config.toml if it is
+# not already there. Edit that copy on the Pi. Do not put the bot token in
+# this file. The token goes in /etc/message-box/env (see .env.example).
+
+[button]
+# BCM numbers, not physical pin numbers. BCM 17 is physical pin 11.
+# The other switch wire goes to physical pin 9 (GND). Do not use physical pin 17.
+pin = 17
+pull_up = true
+# Ignore switch bounce shorter than this. gpiozero does the same on the pin.
+bounce_seconds = 0.05
+# Hold at least this long to record. Anything shorter plays the next message.
+hold_seconds = 0.6
+# Audio shorter than this, after the beep, is thrown away.
+min_record_seconds = 1.0
+# Recording stops itself at this length, even if the button is still held.
+max_record_seconds = 120
+debounce_seconds = 0.03
+
+[lamp]
+# Optional. The Pi cannot power the 12V lamp. This pin drives a transistor.
+# Leave a lamp unwired and the box still runs. Set enabled = false to force
+# the output off.
+enabled = true
+# BCM 26 is physical pin 37.
+pin = 26
+active_high = true
+# steady: the lamp stays lit while messages are waiting.
+# blink: a short flash every couple of seconds instead.
+waiting = "steady"
+waiting_on_seconds = 0.15
+waiting_off_seconds = 1.6
+recording_on_seconds = 0.1
+recording_off_seconds = 0.1
+
+[audio]
+# "auto" picks a USB mic and a USB speaker, skipping the Pi's headphone and HDMI.
+# Or set a device from `arecord -l` / `aplay -l`, for example "plughw:2,0".
+# Environment variables MESSAGEBOX_MIC and MESSAGEBOX_SPEAKER override these.
+mic_device = "auto"
+speaker_device = "auto"
+mic_name_hints = ["TONOR", "G11", "USB"]
+speaker_name_hints = ["LIELONGREN", "USB Audio", "USB"]
+sample_rate = 48000
+channels = 1
+opus_bitrate = "32k"
+# A short press with nothing queued: false = silence, true = a soft tone.
+play_empty_tone = false
+
+[telegram]
+# Only these chats can send notes to the box, and the box will only send to them.
+# A family group id is negative. Paste the number /chatid printed.
+# Leave this empty until you know the id (see the README, "Get the chat id").
+allowed_chat_ids = []
+# Uncomment after you know the family group id. If the allowlist has exactly
+# one chat, you can leave this line out and that chat is used.
+# family_chat_id = CHAT_ID
+
+[paths]
+data_dir = "/var/lib/message-box"
+env_file = "/etc/message-box/env"
+
+[recipient]
+# Used when a future NFC card has selected a person. v1 always uses the family chat.
+idle_timeout_seconds = 120
+
+[dev]
+# Laptop keyboard: how long to wait for a repeated SPACE before it counts as a tap.
+repeat_window_seconds = 0.7
+repeat_gap_seconds = 0.22
+
+[logging]
+level = "INFO"

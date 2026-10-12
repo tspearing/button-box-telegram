@@ -1,0 +1,4 @@
+# Runtime dependencies for Message Box.
+# On the Pi, install.sh also pip-installs lgpio (Pi 5 GPIO via gpiozero).
+python-telegram-bot>=21.6,<22
+gpiozero>=2.0.1
