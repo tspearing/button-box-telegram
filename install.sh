@@ -5,7 +5,7 @@
 set -euo pipefail
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run this as root: sudo ./install.sh" >&2
+  echo "Run this as root: sudo bash install.sh" >&2
   exit 1
 fi
 
@@ -86,11 +86,19 @@ else
 fi
 
 if [[ ! -f "${ENV_FILE}" ]]; then
-  printf '%s\n' '# Bot token from @BotFather. One line, no quotes.' 'TELEGRAM_BOT_TOKEN=' > "${ENV_FILE}"
+  printf '%s\n' \
+    '# Bot token from @BotFather. One line, no quotes.' \
+    'TELEGRAM_BOT_TOKEN=' \
+    'LG_WD=/var/lib/message-box' > "${ENV_FILE}"
   echo "Wrote ${ENV_FILE}"
 fi
 chown root:root "${ENV_FILE}"
 chmod 600 "${ENV_FILE}"
+# lgpio writes a notify pipe in LG_WD. Add it on upgrade without touching the token.
+if ! grep -Eq '^[[:space:]]*LG_WD=' "${ENV_FILE}"; then
+  printf '%s\n' 'LG_WD=/var/lib/message-box' >> "${ENV_FILE}"
+  echo "Added LG_WD to ${ENV_FILE}"
+fi
 
 mkdir -p "${DATA_DIR}"
 chown -R messagebox:messagebox "${DATA_DIR}"

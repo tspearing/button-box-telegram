@@ -45,6 +45,30 @@ def test_card_number_from_a_device_string():
     assert card_from_alsa_device("default") is None
 
 
+def test_missing_usb_devices_are_called_out():
+    builtin = """
+**** List of CAPTURE Hardware Devices ****
+card 0: Headphones [bcm2835 Headphones], device 0: bcm2835 Headphones [bcm2835 Headphones]
+"""
+    engine = AudioEngine(
+        AudioConfig(),
+        capture_lister=lambda: builtin,
+        playback_lister=lambda: builtin,
+    )
+    notes = engine.fallback_notes()
+    assert any(note.startswith("no USB microphone detected") for note in notes)
+    assert "no USB speaker detected, playback went to ALSA default and may be silent" in notes
+
+
+def test_explicit_devices_are_not_reported_as_missing():
+    engine = AudioEngine(
+        AudioConfig(mic_device="plughw:1,0", speaker_device="plughw:2,0"),
+        capture_lister=lambda: "",
+        playback_lister=lambda: "",
+    )
+    assert engine.fallback_notes() == []
+
+
 def test_engine_uses_listers_and_overrides():
     engine = AudioEngine(
         AudioConfig(),

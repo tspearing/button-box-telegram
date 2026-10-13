@@ -5,12 +5,14 @@ from pathlib import Path
 import pytest
 
 from messagebox.config import (
+    SYSTEM_CONFIG_PATH,
     AppConfig,
     TelegramConfig,
     load_config,
     load_token,
     normalize_token,
     parse_env_text,
+    resolve_config_path,
     resolved_family_chat_id,
 )
 
@@ -87,6 +89,46 @@ def test_dev_mode_avoids_an_unwritable_system_data_dir(monkeypatch):
     config = load_config(ROOT / "config.example.toml", dev=True)
     assert config.dev_mode is True
     assert config.paths.data_dir == Path("data")
+
+
+def test_unreadable_cwd_config_falls_back_to_the_system_file(tmp_path, monkeypatch):
+    cwd = tmp_path / "launch"
+    cwd.mkdir()
+    local = cwd / "config.toml"
+    local.write_text("this file must not be opened\n", encoding="utf-8")
+    system = tmp_path / "etc-message-box" / "config.toml"
+    system.parent.mkdir()
+    system.write_text((ROOT / "config.example.toml").read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr("messagebox.config.SYSTEM_CONFIG_PATH", system)
+    real_open = Path.open
+
+    def guarded_open(self, *args, **kwargs):
+        if self.resolve() == local.resolve():
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    assert resolve_config_path(None, dev=False) == system
+    assert resolve_config_path(None, dev=True) == system
+    assert load_config(system, dev=False).button.pin == 17
+
+
+def test_readable_cwd_config_is_still_preferred(tmp_path, monkeypatch):
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    local = cwd / "config.toml"
+    local.write_text(
+        "[button]\npin = 4\n[lamp]\nenabled = false\npin = 26\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr("messagebox.config.SYSTEM_CONFIG_PATH", tmp_path / "missing.toml")
+    chosen = resolve_config_path(None, dev=False)
+    assert chosen is not None
+    assert chosen.resolve() == local.resolve()
+    assert load_config(chosen, dev=False).button.pin == 4
+    assert SYSTEM_CONFIG_PATH == Path("/etc/message-box/config.toml")
 
 
 def test_mic_override_from_the_environment(monkeypatch):

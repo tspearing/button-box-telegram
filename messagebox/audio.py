@@ -133,6 +133,26 @@ class AudioEngine:
         log.info("speaker: %s (%s)", chosen.plughw, chosen.name)
         return chosen.plughw
 
+    def fallback_notes(self) -> list[str]:
+        """Warnings when auto-detect did not find a USB mic or speaker.
+
+        An explicit ``mic_device`` or ``speaker_device`` is never reported
+        here. Playback through ALSA's ``default`` device can exit 0 and
+        still be silent, so the check command has to say so itself.
+        """
+        mic = self.resolve_mic()
+        speaker = self.resolve_speaker(mic_device=mic)
+        notes: list[str] = []
+        if self.config.mic_device in ("", "auto") and mic == "default":
+            notes.append(
+                "no USB microphone detected, recording used ALSA default and may fail or be silent"
+            )
+        if self.config.speaker_device in ("", "auto") and speaker == "default":
+            notes.append(
+                "no USB speaker detected, playback went to ALSA default and may be silent"
+            )
+        return notes
+
     def describe(self) -> str:
         mic_devices = parse_alsa_list(self._capture_lister())
         speaker_devices = parse_alsa_list(self._playback_lister())

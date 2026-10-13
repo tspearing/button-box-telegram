@@ -8,9 +8,12 @@ support the Pi 5.
 from __future__ import annotations
 
 import logging
+import os
 import time
+from pathlib import Path
 
 from messagebox.inputs.base import ButtonEdge
+from messagebox.workdir import prepare_lgpio_directory
 
 log = logging.getLogger("messagebox.gpio")
 
@@ -22,6 +25,7 @@ class GpioButtonSource:
         self._button = None
 
     def start(self, on_edge) -> None:
+        prepare_lgpio_directory(Path(os.environ.get("LG_WD", "/var/lib/message-box")))
         from gpiozero import Button, Device
         from gpiozero.pins.lgpio import LGPIOFactory
 

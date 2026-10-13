@@ -47,6 +47,9 @@ def test_install_and_service_match_the_pi_setup():
     assert "User=messagebox" in service
     assert "python -m messagebox run" in service
     assert "StandardOutput=journal" in service
+    assert "WorkingDirectory=/var/lib/message-box" in service
+    assert "Environment=LG_WD=/var/lib/message-box" in service
+    assert "LG_WD=/var/lib/message-box" in script
 
 
 def test_bridge_builds_on_telegram_21(tmp_path):
