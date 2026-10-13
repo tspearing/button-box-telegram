@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from messagebox import __version__
@@ -27,6 +28,7 @@ from messagebox.recipients import Recipient, RecipientDirectory
 from messagebox.retry import retry_delay
 from messagebox.sounds import SoundBank
 from messagebox.telegram_bridge import TelegramBridge, send_voice_note
+from messagebox.workdir import absolute_data_dir, ensure_writable_data_dir, prepare_lgpio_directory
 
 log = logging.getLogger("messagebox.runtime")
 
@@ -67,13 +69,14 @@ class Runtime:
         if not ffmpeg_available():
             print("ffmpeg is not installed. On the Pi: sudo apt install ffmpeg")
             return 1
-        data = self.config.paths.data_dir
-        try:
-            data.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            data = Path("data")
-            data.mkdir(parents=True, exist_ok=True)
-            print(f"Cannot write to the configured data directory; using {data.resolve()}")
+        preferred = self.config.paths.data_dir
+        data = ensure_writable_data_dir(preferred)
+        if data != absolute_data_dir(preferred):
+            print(f"Cannot write to {preferred}. Using {data}")
+        print(f"Audio check files: {data}")
+        notes = self.audio.fallback_notes()
+        for note in notes:
+            print(f"Warning: {note}")
         sounds = SoundBank(data / "sounds")
         sounds.ensure()
         print(self.audio.describe())
@@ -92,8 +95,14 @@ class Runtime:
             return 1
         print("Playing the recording back...")
         ok = await self.audio.play_and_wait(dest)
-        print("Audio check passed." if ok else "Playback of the recording failed.")
-        return 0 if ok else 1
+        if not ok:
+            print("Playback of the recording failed.")
+            return 1
+        if notes:
+            print("Audio check finished, with the warnings above. Playback may have been silent.")
+            return 0
+        print("Audio check passed.")
+        return 0
 
     async def run(self) -> None:
         if not ffmpeg_available():
@@ -108,8 +117,14 @@ class Runtime:
             log.error("%s", exc)
             raise SystemExit(1) from exc
 
-        data = self.config.paths.data_dir
-        data.mkdir(parents=True, exist_ok=True)
+        preferred = self.config.paths.data_dir
+        data = ensure_writable_data_dir(preferred)
+        if data != absolute_data_dir(preferred):
+            log.warning("cannot write %s; storing notes in %s", preferred, data)
+        self.config = replace(self.config, paths=replace(self.config.paths, data_dir=data))
+        if not self.config.dev_mode:
+            # Before gpiozero/lgpio. Dev mode never opens the GPIO chip.
+            prepare_lgpio_directory(data)
         (data / "tmp").mkdir(parents=True, exist_ok=True)
         self._inbox = DiskQueue(data / "inbox")
         self._outbox = DiskQueue(data / "outbox")

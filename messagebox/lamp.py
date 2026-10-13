@@ -15,7 +15,11 @@ Patterns:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
+
+from messagebox.workdir import prepare_lgpio_directory
 
 log = logging.getLogger("messagebox.lamp")
 
@@ -49,6 +53,7 @@ class GpioLamp:
     """Drive a logic-level transistor from a gpiozero LED."""
 
     def __init__(self, pin: int, *, active_high: bool, patterns: LampPatterns) -> None:
+        prepare_lgpio_directory(Path(os.environ.get("LG_WD", "/var/lib/message-box")))
         from gpiozero import LED
 
         self._led = LED(pin, active_high=active_high)
@@ -101,6 +106,7 @@ def open_lamp(*, enabled: bool, pin: int, active_high: bool, patterns: LampPatte
 
 def _use_lgpio_factory() -> None:
     """Pin factory for the Pi 5. gpiozero then talks to lgpio, not RPi.GPIO."""
+    prepare_lgpio_directory(Path(os.environ.get("LG_WD", "/var/lib/message-box")))
     from gpiozero import Device
     from gpiozero.pins.lgpio import LGPIOFactory
 

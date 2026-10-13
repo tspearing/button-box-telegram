@@ -8,6 +8,7 @@ privileges. Dev mode can use a local ``.env`` instead.
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 
 DEFAULT_DATA_DIR = Path("/var/lib/message-box")
 DEFAULT_ENV_FILE = Path("/etc/message-box/env")
+SYSTEM_CONFIG_PATH = Path("/etc/message-box/config.toml")
 
 
 @dataclass(frozen=True)
@@ -143,31 +145,64 @@ def load_token(*candidates: Path) -> str:
 
 
 def resolve_config_path(explicit: Path | None, *, dev: bool) -> Path | None:
-    """Pick a config file. None means "built-in defaults"."""
+    """Pick a config file. None means "built-in defaults".
+
+    A ``config.toml`` in the current directory is used only when this process
+    can open it. An unreadable file (common when the service user is started
+    from someone else's home directory) is skipped so the system file can be
+    used instead. Commands therefore work from any directory.
+    """
     if explicit is not None:
         return explicit
     env = os.environ.get("MESSAGEBOX_CONFIG", "").strip()
     if env:
         return Path(env)
     local = Path("config.toml")
-    if local.is_file():
+    if _openable_file(local):
         return local
-    system = Path("/etc/message-box/config.toml")
+    if _present_but_unreadable(local):
+        print(
+            f"Ignoring {local.resolve()} because it is not readable. "
+            f"Trying {SYSTEM_CONFIG_PATH}.",
+            file=sys.stderr,
+        )
+    system = SYSTEM_CONFIG_PATH
     if dev:
         example = Path("config.example.toml")
-        if example.is_file() and not system.is_file():
+        if _openable_file(example) and not _openable_file(system):
             return example
-        if system.is_file():
+        if _openable_file(system):
             return system
-        if example.is_file():
+        if _openable_file(example):
             return example
         return None
-    if system.is_file():
+    if _openable_file(system):
         return system
     example = Path("config.example.toml")
-    if example.is_file():
+    if _openable_file(example):
         return example
     return None
+
+
+def _openable_file(path: Path) -> bool:
+    """True when ``path`` is a regular file this process can open."""
+    try:
+        if not path.is_file():
+            return False
+        with path.open("rb"):
+            return True
+    except OSError:
+        return False
+
+
+def _present_but_unreadable(path: Path) -> bool:
+    """True when ``path`` exists as a file but opening it fails."""
+    try:
+        if not path.is_file():
+            return False
+    except OSError:
+        return True
+    return not _openable_file(path)
 
 
 def load_config(path: Path | None, *, dev: bool = False) -> AppConfig:
