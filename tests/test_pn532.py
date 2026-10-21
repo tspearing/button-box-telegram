@@ -11,10 +11,12 @@ from messagebox.inputs.pn532 import (
     Pn532,
     Pn532CardSource,
     Pn532Reader,
+    _unknown_targets,
     build_frame,
     encode_frame,
     explain_i2c_failure,
     format_scan,
+    pop_frame,
     uid_from_autopoll,
 )
 
@@ -49,25 +51,105 @@ def test_firmware_command_frame_matches_the_manual():
     assert build_frame(b"\x02") == bytes.fromhex("0000ff02fed4022a00")
 
 
+# Captured on the Pi from NTAG215 cards. InAutoPoll, not personal data.
+# 0x61, NbTg, then Type 0x10, Length 0x0c, then Tg, SENS_RES 0044,
+# SEL_RES 00, NFCIDLength 07, UID.
+_TWO_CARDS = "6102100c010044000704e350d95f6180100c020044000704f269203f6180"
+_ONE_CARD_SHORT = "6101010044000704e350d95f6180"
+_ONE_CARD_LONG = "6101100c010044000704505da44f6180"
+
+
 def test_autopoll_uid_for_a_seven_byte_tag():
-    payload = bytes.fromhex("6101100b4400000704a1b2c3d4e5f6")
-    assert uid_from_autopoll(payload) == "04A1B2C3D4E5F6"
+    assert uid_from_autopoll(bytes.fromhex(_ONE_CARD_LONG)) == "04505DA44F6180"
     assert uid_from_autopoll(bytes.fromhex("6100")) is None
+
+
+def test_pi_frames_yield_the_card_uid(caplog):
+    _unknown_targets.clear()
+    caplog.set_level("INFO", logger="messagebox.nfc")
+    assert uid_from_autopoll(bytes.fromhex(_ONE_CARD_SHORT)) == "04E350D95F6180"
+    assert uid_from_autopoll(bytes.fromhex(_ONE_CARD_LONG)) == "04505DA44F6180"
+    assert uid_from_autopoll(bytes.fromhex(_TWO_CARDS)) == "04E350D95F6180"
+    assert "using the first" in caplog.text
+    assert "Hold one card at a time" in caplog.text
+    # The same two-card frame must not log again on the next poll.
+    caplog.clear()
+    assert uid_from_autopoll(bytes.fromhex(_TWO_CARDS)) == "04E350D95F6180"
+    assert caplog.records == []
+
+
+def test_four_and_ten_byte_uids_with_and_without_the_type_header():
+    four = bytes.fromhex("922E5832")
+    ten = bytes.fromhex("04112233445566778899")
+    assert uid_from_autopoll(_wrapped(four, sens=bytes.fromhex("0400"), sel=0x08)) == "922E5832"
+    assert uid_from_autopoll(_raw(four, sens=bytes.fromhex("0400"), sel=0x08)) == "922E5832"
+    assert uid_from_autopoll(_wrapped(ten)) == "04112233445566778899"
+    assert uid_from_autopoll(_raw(ten)) == "04112233445566778899"
+    # The manual's two-target example: a 4-byte Mifare card, then a DEP target.
+    manual = bytes.fromhex(
+        "610210090104000804922e5832"
+        "4018020008400408123456001122334455667788990000000901"
+    )
+    assert uid_from_autopoll(manual) == "922E5832"
+
+
+def test_atqa_first_layout_is_not_read_as_a_uid():
+    # Old guess: Type, Length, ATQA, SAK, UID length, UID. The length byte
+    # landed on SEL_RES for a real card. This synthetic frame must not
+    # come back as a 4-byte UID taken from the middle.
+    _unknown_targets.clear()
+    assert uid_from_autopoll(bytes.fromhex("6101100b4400000704a1b2c3d4e5f6")) is None
+    assert uid_from_autopoll(bytes.fromhex("6101ff")) is None
+
+
+def test_a_split_read_does_not_explain_the_short_frame():
+    """The short Pi frame is a real response, not ``10 0c`` lost in transit.
+
+    Those two bytes are Type and Length. Cutting them out of a valid long
+    frame, or inserting the next read's ready byte there, fails the
+    checksum. ``pop_frame`` will not hand the short payload to the parser.
+    """
+    long_payload = bytes.fromhex(_ONE_CARD_LONG)
+    frame = encode_frame(0xD5, long_payload)
+    kind, body, _rest = pop_frame(b"\x01" + frame)
+    assert kind == "data"
+    assert body[1:] == long_payload
+    marker = bytes.fromhex("100c")
+    at = frame.index(marker)
+    assert pop_frame(frame[:at] + frame[at + 2 :])[0] is None
+    assert pop_frame(frame[:at] + b"\x01" + frame[at:])[0] is None
+    # The short capture is its own valid frame, and it parses.
+    short = bytes.fromhex(_ONE_CARD_SHORT)
+    kind, body, _rest = pop_frame(encode_frame(0xD5, short))
+    assert kind == "data" and body[1:] == short
+    assert uid_from_autopoll(short) == "04E350D95F6180"
+
+
+def _wrapped(uid: bytes, *, sens: bytes = bytes.fromhex("0044"), sel: int = 0) -> bytes:
+    record = bytes((1,)) + sens + bytes((sel, len(uid))) + uid
+    return bytes((0x61, 0x01, 0x10, len(record))) + record
+
+
+def _raw(uid: bytes, *, sens: bytes = bytes.fromhex("0044"), sel: int = 0) -> bytes:
+    return bytes((0x61, 0x01, 0x01)) + sens + bytes((sel, len(uid))) + uid
 
 
 def test_reader_poll_uses_scripted_frames():
     reads: list[bytes] = []
     reads += _ready(encode_frame(0xD5, bytes.fromhex("0332010607")))
     reads += _ready(encode_frame(0xD5, bytes.fromhex("15")))
-    reads += _ready(encode_frame(0xD5, bytes.fromhex("6101100b4400000704a1b2c3d4e5f6")))
+    reads += _ready(encode_frame(0xD5, bytes.fromhex(_ONE_CARD_LONG)))
+    reads += _ready(encode_frame(0xD5, bytes.fromhex(_ONE_CARD_SHORT)))
     reads += _ready(encode_frame(0xD5, bytes.fromhex("6100")))
     transport = ChunkTransport(reads)
     reader = Pn532Reader(bus=1, address=0x24, transport=transport)
     reader.open()
-    assert reader.poll() == "04A1B2C3D4E5F6"
+    assert reader.poll() == "04505DA44F6180"
+    assert reader.poll() == "04E350D95F6180"
     assert reader.poll() is None
     assert transport.writes[0].startswith(b"\x55\x55")
     assert transport.writes[1] == build_frame(b"\x02")
+    assert IN_AUTO_POLL == bytes((0x60, 0x01, 0x01, 0x00))
     assert IN_AUTO_POLL in transport.writes[-1]
 
 

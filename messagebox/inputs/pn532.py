@@ -38,7 +38,20 @@ GET_FIRMWARE = b"\x02"
 # Normal mode, timeout 0x14, IRQ on. Matches the usual PN532 bring-up.
 SAM_CONFIGURATION = bytes((0x14, 0x01, 0x14, 0x01))
 # One poll, 150 ms period, generic 106 kbps ISO14443A (NTAG215).
+# InAutoPoll has no MaxTg field (that belongs to InList passive target).
+# PollNr is already 1. Two cards in the field still come back as two
+# targets; the parser below uses the first.
 IN_AUTO_POLL = bytes((0x60, 0x01, 0x01, 0x00))
+# Output Type values from UM0701-02 §7.3.13. Generics (0x00, 0x01, 0x02)
+# are not used in the response, which is how a target number of 0x01 is
+# told apart from a Type byte.
+_AUTOPOLL_TYPES = frozenset(
+    {0x03, 0x04, 0x10, 0x11, 0x12, 0x20, 0x23, 0x40, 0x41, 0x42, 0x80, 0x81, 0x82}
+)
+# 106 kbps type A. 0x10 is Mifare/NTAG. 0x20 is ISO14443-4A, same UID
+# record with an ATS after it.
+_TYPE_A = frozenset({0x10, 0x20})
+_UID_LENGTHS = frozenset({4, 7, 10})
 
 _I2C_SLAVE = 0x0703
 _I2C_TIMEOUT = 0x0702  # unit is 10 ms
@@ -168,11 +181,21 @@ def pop_frame(buf: bytes) -> tuple[str | None, bytes, bytes]:
 
 
 def uid_from_autopoll(payload: bytes) -> str | None:
-    """Return the hex UID from an InAutoPoll payload, or None if no tag.
+    """Return the first card UID from an InAutoPoll payload, or None.
 
-    ``payload`` is the response after the TFI byte: ``0x61``, target
-    count, then per target a type, a length, and the target bytes.
-    Type A target bytes are ATQA (2), SAK (1), UID length (1), UID.
+    ``payload`` is the response after the TFI byte. UM0701-02 §7.3.13 is
+    ``0x61``, ``NbTg``, then for each target a Type, a Length, and the
+    target bytes. For a Mifare or NTAG card the Type is ``0x10`` and the
+    target bytes are the InList passive-target record: target number,
+    SENS_RES (2), SEL_RES, NFCID length, NFCID. A 7-byte NTAG215 therefore
+    has Length ``0x0C``. The NFCID length is 4, 7, or 10.
+
+    The same record sometimes arrives with no Type or Length in front of
+    it. Both shapes are real checksummed frames. Removing ``10 0c`` from
+    a long frame breaks that frame's checksum, so the short shape is not
+    a split I2C read of the long one.
+
+    When more than one target is present, the first UID is used.
     """
     if not payload:
         raise OSError("empty PN532 response")
@@ -182,20 +205,25 @@ def uid_from_autopoll(payload: bytes) -> str | None:
         raise OSError(f"unexpected PN532 response {payload.hex()}")
     if len(payload) < 2 or payload[1] == 0:
         return None
+    count = payload[1]
+    if count > 2:
+        _log_unknown_target(payload)
+        return None
     offset = 2
-    if offset + 2 > len(payload):
-        return None
-    offset += 1  # target type
-    length = payload[offset]
-    offset += 1
-    target = payload[offset : offset + length]
-    if len(target) != length:
+    found: list[str] = []
+    for _ in range(count):
+        parsed = _next_target(payload, offset)
+        if parsed is None:
+            break
+        offset, uid = parsed
+        if uid:
+            found.append(uid)
+    if not found:
         _log_unknown_target(payload)
         return None
-    uid = _uid_from_type_a(target)
-    if uid is None:
-        _log_unknown_target(payload)
-    return uid
+    if count > 1:
+        _log_extra_targets(payload, count)
+    return found[0]
 
 
 def _log_unknown_target(payload: bytes) -> None:
@@ -206,16 +234,54 @@ def _log_unknown_target(payload: bytes) -> None:
     log.info("NFC target was not a card UID we understand: %s", text)
 
 
-def _uid_from_type_a(target: bytes) -> str | None:
-    if len(target) < 4:
+def _log_extra_targets(payload: bytes, count: int) -> None:
+    key = f"multi:{payload.hex()}"
+    if key in _unknown_targets:
+        return
+    _unknown_targets.add(key)
+    log.info(
+        "NFC saw %s cards and is using the first. Hold one card at a time.",
+        count,
+    )
+
+
+def _next_target(payload: bytes, offset: int) -> tuple[int, str | None] | None:
+    """One target at ``offset``. Returns ``(next_offset, uid)``.
+
+    ``uid`` is None when the target is a type this box does not use, so
+    the caller can keep walking. None for the whole result means the
+    bytes here are not a target record.
+    """
+    if offset >= len(payload):
         return None
-    uid_len = target[3]
-    if not 4 <= uid_len <= 10:
+    if offset + 2 <= len(payload) and payload[offset] in _AUTOPOLL_TYPES:
+        length = payload[offset + 1]
+        end = offset + 2 + length
+        if length < 5 or end > len(payload):
+            return None
+        if payload[offset] not in _TYPE_A:
+            return end, None
+        uid = _uid_from_target_data(payload[offset + 2 : end])
+        if uid is None:
+            return None
+        return end, uid
+    uid = _uid_from_target_data(payload[offset:])
+    if uid is None:
         return None
-    uid = target[4 : 4 + uid_len]
-    if len(uid) != uid_len:
+    return offset + 5 + payload[offset + 4], uid
+
+
+def _uid_from_target_data(target: bytes) -> str | None:
+    """UID from an InList target record, which may have an ATS after it.
+
+    Layout: Tg, SENS_RES (2), SEL_RES, NFCIDLength, NFCID. Tg is 1 or 2.
+    """
+    if len(target) < 5 or target[0] not in (1, 2):
         return None
-    return uid.hex().upper()
+    uid_len = target[4]
+    if uid_len not in _UID_LENGTHS or len(target) < 5 + uid_len:
+        return None
+    return target[5 : 5 + uid_len].hex().upper()
 
 
 class CardEdgeDetector:
