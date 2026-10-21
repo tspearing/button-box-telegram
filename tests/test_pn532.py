@@ -1,6 +1,9 @@
 """PN532 frames and the card thread, with no I2C hardware."""
 
+import subprocess
 import time
+
+import pytest
 
 from messagebox.inputs.pn532 import (
     IN_AUTO_POLL,
@@ -10,6 +13,7 @@ from messagebox.inputs.pn532 import (
     Pn532Reader,
     build_frame,
     encode_frame,
+    explain_i2c_failure,
     format_scan,
     uid_from_autopoll,
 )
@@ -65,6 +69,111 @@ def test_reader_poll_uses_scripted_frames():
     assert transport.writes[0].startswith(b"\x55\x55")
     assert transport.writes[1] == build_frame(b"\x02")
     assert IN_AUTO_POLL in transport.writes[-1]
+
+
+class _NakThen(ChunkTransport):
+    """Raise errno 121 a few times, then behave like a scripted reader.
+
+    A Pi 5 does this when the PN532 NACKs a read or a write while it is
+    waking up. The status byte is never delivered; the syscall fails.
+    """
+
+    def __init__(self, *, read_naks: int = 0, write_naks: int = 0, reads: list[bytes] | None = None):
+        super().__init__(reads or [])
+        self.read_naks = read_naks
+        self.write_naks = write_naks
+
+    def write(self, data: bytes) -> None:
+        if self.write_naks:
+            self.write_naks -= 1
+            raise OSError(121, "Remote I/O error")
+        super().write(data)
+
+    def read(self, count: int) -> bytes:
+        if self.read_naks:
+            self.read_naks -= 1
+            raise OSError(121, "Remote I/O error")
+        return super().read(count)
+
+
+def test_transact_retries_a_pi5_read_nak():
+    frame = encode_frame(0xD5, bytes.fromhex("0332010607"))
+    ack = bytes.fromhex("0000ff00ff00")
+    transport = _NakThen(
+        read_naks=2,
+        reads=[b"\x01", b"\x01" + ack, b"\x01", b"\x01" + frame],
+    )
+    chip = Pn532(transport)
+    assert chip.transact(b"\x02", timeout=1.0) == bytes.fromhex("0332010607")
+    assert transport.writes == [build_frame(b"\x02")]
+
+
+def test_transact_retries_a_wakeup_style_write_nak():
+    frame = encode_frame(0xD5, bytes.fromhex("0332010607"))
+    ack = bytes.fromhex("0000ff00ff00")
+    transport = _NakThen(
+        write_naks=1,
+        reads=[b"\x01", b"\x01" + ack, b"\x01", b"\x01" + frame],
+    )
+    chip = Pn532(transport)
+    assert chip.transact(b"\x02", timeout=1.0) == bytes.fromhex("0332010607")
+    assert transport.writes == [build_frame(b"\x02")]
+
+
+def test_open_survives_naks_and_reports_a_dead_bus(monkeypatch):
+    reads: list[bytes] = []
+    reads += _ready(encode_frame(0xD5, bytes.fromhex("0332010607")))
+    reads += _ready(encode_frame(0xD5, bytes.fromhex("15")))
+    flaky = _NakThen(read_naks=3, write_naks=1, reads=reads)
+    reader = Pn532Reader(bus=1, address=0x24, transport=flaky)
+    reader.open()
+    assert any(build_frame(b"\x02") == written for written in flaky.writes)
+
+    class Dead:
+        def write(self, data: bytes) -> None:
+            raise OSError(121, "Remote I/O error")
+
+        def read(self, count: int) -> bytes:
+            raise OSError(121, "Remote I/O error")
+
+    monkeypatch.setattr("messagebox.inputs.pn532.read_i2c_clock_hz", lambda _bus: 100000)
+    with pytest.raises(OSError, match="dtparam=i2c_arm_baudrate=10000") as raised:
+        Pn532Reader(bus=1, address=0x24, transport=Dead()).open()
+    text = str(raised.value)
+    assert "121" in text or "Remote I/O" in text
+    assert "sudo reboot" in text
+    monkeypatch.setattr("messagebox.inputs.pn532.read_i2c_clock_hz", lambda _bus: 10000)
+    with pytest.raises(OSError, match="already 10000") as steady:
+        Pn532Reader(bus=1, address=0x24, transport=Dead()).open()
+    assert "sudo reboot" not in str(steady.value)
+
+
+def test_i2c_failure_text_names_the_clock_fix(monkeypatch):
+    monkeypatch.setattr("messagebox.inputs.pn532.read_i2c_clock_hz", lambda _bus: None)
+    text = explain_i2c_failure(OSError(121, "Remote I/O error"), bus=1, address=0x24)
+    assert "0x24" in text
+    assert "i2c-1" in text
+    assert "dtparam=i2c_arm_baudrate=10000" in text
+    assert "home" not in text.lower()
+
+
+def test_baudrate_parser_does_not_confuse_100000_with_10000(tmp_path):
+    script = r'''
+    last=$(grep -E '^[[:space:]]*dtparam=i2c_arm_baudrate=' "$1" | tail -n 1 || true)
+    value="${last##*baudrate=}"
+    value="${value%%[^0-9]*}"
+    printf '%s' "$value"
+    '''
+    fast = tmp_path / "fast.txt"
+    fast.write_text("dtparam=i2c_arm=on\ndtparam=i2c_arm_baudrate=100000\n", encoding="utf-8")
+    slow = tmp_path / "slow.txt"
+    slow.write_text("# dtparam=i2c_arm_baudrate=400000\ndtparam=i2c_arm_baudrate=10000\n", encoding="utf-8")
+    assert _baud_value(script, fast) == "100000"
+    assert _baud_value(script, slow) == "10000"
+
+
+def _baud_value(script: str, path) -> str:
+    return subprocess.check_output(["bash", "-c", script, "bash", str(path)], text=True)
 
 
 def test_transact_skips_a_not_ready_byte():

@@ -182,13 +182,19 @@ def resolve_config_path(explicit: Path | None, *, dev: bool) -> Path | None:
     local = Path("config.toml")
     if _openable_file(local):
         return local
-    if _present_but_unreadable(local):
-        print(
-            f"Ignoring {local.resolve()} because it is not readable. "
-            f"Trying {SYSTEM_CONFIG_PATH}.",
-            file=sys.stderr,
-        )
     system = SYSTEM_CONFIG_PATH
+    # A config.toml in the current directory is often another user's file
+    # (running the command from a home directory). Skip it quietly when the
+    # system file, or the example in dev mode, can be read. Say something
+    # only when that skip leaves no config at all.
+    if _present_but_unreadable(local):
+        example = Path("config.example.toml")
+        fallback = _openable_file(system) or (dev and _openable_file(example))
+        if not fallback:
+            print(
+                "Ignoring config.toml in the current directory because it is not readable.",
+                file=sys.stderr,
+            )
     if dev:
         example = Path("config.example.toml")
         if _openable_file(example) and not _openable_file(system):

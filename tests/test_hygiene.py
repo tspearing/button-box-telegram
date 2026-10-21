@@ -44,6 +44,8 @@ def test_install_and_service_match_the_pi_setup():
     assert "chmod 600" in script
     assert "groupadd --system i2c" in script
     assert script.index("groupadd --system i2c") < script.index("systemctl enable")
+    assert "dtparam=i2c_arm_baudrate=10000" in script
+    assert 'baud_value="${baud_value%%[^0-9]*}"' in script
     service = (ROOT / "deploy/message-box.service").read_text(encoding="utf-8")
     assert "EnvironmentFile=/etc/message-box/env" in service
     assert "User=messagebox" in service

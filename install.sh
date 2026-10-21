@@ -41,10 +41,25 @@ if [[ -f /boot/firmware/config.txt ]]; then
 elif [[ -f /boot/config.txt ]]; then
   boot_cfg="/boot/config.txt"
 fi
-if [[ -n "${boot_cfg}" ]] && ! grep -Eq '^[[:space:]]*dtparam=i2c_arm=on' "${boot_cfg}"; then
-  printf '\n# Message Box NFC reader\ndtparam=i2c_arm=on\n' >> "${boot_cfg}"
-  echo "Added dtparam=i2c_arm=on to ${boot_cfg}."
-  echo "Reboot if 'i2cdetect -y 1' does not show 24."
+I2C_BAUD_REBOOT=0
+if [[ -n "${boot_cfg}" ]]; then
+  if ! grep -Eq '^[[:space:]]*dtparam=i2c_arm=on' "${boot_cfg}"; then
+    printf '\n# Message Box NFC reader\ndtparam=i2c_arm=on\n' >> "${boot_cfg}"
+    echo "Added dtparam=i2c_arm=on to ${boot_cfg}."
+    echo "Reboot if 'i2cdetect -y 1' does not show 24."
+    I2C_BAUD_REBOOT=1
+  fi
+  # The last uncommented baudrate line wins. 10000 Hz lets the PN532
+  # clock-stretch without the Pi aborting the transfer (errno 121).
+  # Match 10000 exactly: 100000 starts with the same digits and is not slow enough.
+  last_baud="$(grep -E '^[[:space:]]*dtparam=i2c_arm_baudrate=' "${boot_cfg}" | tail -n 1 || true)"
+  baud_value="${last_baud##*baudrate=}"
+  baud_value="${baud_value%%[^0-9]*}"
+  if [[ "${baud_value}" != "10000" ]]; then
+    printf '\n# PN532 clock stretching. Used only after reboot.\ndtparam=i2c_arm_baudrate=10000\n' >> "${boot_cfg}"
+    echo "Set the I2C clock to 10000 Hz in ${boot_cfg}."
+    I2C_BAUD_REBOOT=1
+  fi
 fi
 modprobe i2c-dev 2>/dev/null || true
 # The systemd unit lists SupplementaryGroups=i2c. systemd will not start
@@ -150,3 +165,21 @@ echo "  sudo -u messagebox ${VENV}/bin/python -m messagebox --check-audio"
 echo "Read an NFC card UID with the service stopped:"
 echo "  sudo systemctl stop message-box"
 echo "  sudo -u messagebox ${VENV}/bin/python -m messagebox --scan-card"
+if [[ "${I2C_BAUD_REBOOT}" == "1" ]]; then
+  echo
+  echo "A reboot is required before the PN532 uses the new I2C clock:"
+  echo "  sudo reboot"
+else
+  live_hz=""
+  freq_node="/sys/class/i2c-adapter/i2c-1/of_node/clock-frequency"
+  if [[ -r "${freq_node}" ]]; then
+    live_hz="$(python3 -c 'import pathlib,sys; raw=pathlib.Path(sys.argv[1]).read_bytes(); print(int.from_bytes(raw[:4], "big") if len(raw) >= 4 else "")' "${freq_node}" 2>/dev/null || true)"
+  fi
+  if [[ -n "${live_hz}" && "${live_hz}" != "10000" ]]; then
+    echo
+    echo "The boot config requests 10000 Hz, but i2c-1 is still running at ${live_hz} Hz."
+    echo "A reboot is required: sudo reboot"
+  elif [[ "${live_hz}" == "10000" ]]; then
+    echo "I2C clock is already 10000 Hz. No reboot is required for the reader."
+  fi
+fi
