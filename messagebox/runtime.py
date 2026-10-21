@@ -14,18 +14,22 @@ from dataclasses import replace
 from pathlib import Path
 
 from messagebox import __version__
+from messagebox.announce import Announcer, espeak_ng_synth
 from messagebox.audio import AudioEngine, ffmpeg_available
 from messagebox.button_machine import ButtonMachine
+from messagebox.cards import build_directory
 from messagebox.config import AppConfig, load_token, resolved_family_chat_id
 from messagebox.coordinator import Coordinator, EffectKind
 from messagebox.inputs.base import ButtonEdge
 from messagebox.inputs.gpio_button import GpioButtonSource
 from messagebox.inputs.keyboard import KeyboardButtonSource
+from messagebox.inputs.pn532 import Pn532CardSource
 from messagebox.lamp import LampPatterns, open_lamp
 from messagebox.policy import should_send_to
 from messagebox.queue_store import DiskQueue
-from messagebox.recipients import Recipient, RecipientDirectory
+from messagebox.recipients import RecipientDirectory, normalize_uid
 from messagebox.retry import retry_delay
+from messagebox.selection import load_selection, save_selection
 from messagebox.sounds import SoundBank
 from messagebox.telegram_bridge import TelegramBridge, send_voice_note
 from messagebox.workdir import absolute_data_dir, ensure_writable_data_dir, prepare_lgpio_directory
@@ -54,8 +58,13 @@ class Runtime:
         self._coord: Coordinator | None = None
         self._directory: RecipientDirectory | None = None
         self._sounds: SoundBank | None = None
+        self._announcer: Announcer | None = None
+        self._selection_path: Path | None = None
+        self._cards: asyncio.Queue = asyncio.Queue()
+        self._card_source: Pn532CardSource | None = None
         self._capture_proc = None
         self._capture_path: Path | None = None
+        self._capture_chat_id: int | None = None
         self._capturing = False
         self._play_proc = None
         self._play_token = 0
@@ -130,14 +139,14 @@ class Runtime:
         self._outbox = DiskQueue(data / "outbox")
         self._sounds = SoundBank(data / "sounds")
         self._sounds.ensure()
-        self._directory = RecipientDirectory(
-            Recipient(
-                key="family",
-                chat_id=family_id or 0,
-                display_name="Family",
-            ),
-            idle_timeout_seconds=self.config.recipient.idle_timeout_seconds,
+        self._announcer = Announcer(data / "announce-cache", espeak_ng_synth)
+        self._selection_path = data / "selection.json"
+        self._directory = build_directory(
+            family_id or 0,
+            self.config.cards,
+            self.config.recipient.idle_timeout_seconds,
         )
+        self._restore_selection()
         machine = ButtonMachine(
             hold_seconds=self.config.button.hold_seconds,
             min_record_seconds=self.config.button.min_record_seconds,
@@ -169,8 +178,20 @@ class Runtime:
         log.info("Message Box %s", __version__)
         log.info("data directory: %s", data)
         log.info("inbox: %s waiting", len(self._inbox))
-        if family_id and should_send_to(family_id, self._allowed):
-            log.info("sending to family chat %s", family_id)
+        if self.config.cards:
+            log.info("%s card(s) configured", len(self.config.cards))
+            for card in self.config.cards:
+                log.info(
+                    "card %s speaks %r and sends to chat %s",
+                    card.uid,
+                    card.announce or "Card",
+                    card.chat_id,
+                )
+        else:
+            log.info("no NFC cards configured; recordings use the default chat")
+        active = self._directory.current
+        if active.chat_id and should_send_to(active.chat_id, self._allowed):
+            log.info("sending to chat %s (%s)", active.chat_id, active.display_name)
         else:
             log.warning(
                 "family chat is not ready. Incoming notes are ignored and "
@@ -209,11 +230,12 @@ class Runtime:
                 self._lamp.close()
             raise SystemExit(1) from exc
 
+        self._start_cards()
         tasks = [
             asyncio.create_task(self._button_loop(), name="button"),
             asyncio.create_task(self._audio_loop(), name="audio"),
             asyncio.create_task(self._outbox_loop(), name="outbox"),
-            asyncio.create_task(self._idle_loop(), name="idle"),
+            asyncio.create_task(self._card_loop(), name="cards"),
             asyncio.create_task(self._poll(application), name="telegram"),
         ]
         poll_task = tasks[-1]
@@ -232,6 +254,9 @@ class Runtime:
             if self._background:
                 await asyncio.gather(*self._background, return_exceptions=True)
             await self._shutdown_audio()
+            if self._card_source is not None:
+                self._card_source.stop()
+                self._card_source = None
             if self._source is not None:
                 self._source.stop()
             try:
@@ -270,6 +295,47 @@ class Runtime:
         if loop is None or loop.is_closed():
             return
         loop.call_soon_threadsafe(self._edges.put_nowait, (edge, at))
+
+    def _on_card(self, uid: str) -> None:
+        """NFC thread entry. Only queues the UID. It does not touch the button."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(self._cards.put_nowait, uid)
+
+    def _start_cards(self) -> None:
+        if self.config.dev_mode:
+            log.info("dev mode: NFC reader is not opened")
+            return
+        if not self.config.nfc.enabled:
+            log.info("NFC reader is disabled in the config")
+            return
+        self._card_source = Pn532CardSource(
+            bus=self.config.nfc.i2c_bus,
+            address=self.config.nfc.i2c_address,
+        )
+        try:
+            self._card_source.start(self._on_card)
+        except Exception:
+            log.exception("NFC reader thread did not start; continuing without cards")
+            self._card_source = None
+
+    def _restore_selection(self) -> None:
+        assert self._directory is not None and self._selection_path is not None
+        saved = load_selection(self._selection_path)
+        if saved is None:
+            return
+        uid, _chat_id = saved
+        chosen = self._directory.select_card(uid, time.monotonic())
+        if chosen is None:
+            log.info("saved card %s is not configured; using the default chat", uid)
+            return
+        log.info(
+            "restored card %s, sending to chat %s (%s)",
+            uid,
+            chosen.chat_id,
+            chosen.display_name,
+        )
 
     async def _poll(self, application) -> None:
         try:
@@ -379,6 +445,10 @@ class Runtime:
         async with self._capture_lock:
             if self._capturing:
                 return
+            if self._directory is not None:
+                # Snapshot before the beep, so a card tapped during this
+                # recording does not retarget it.
+                self._capture_chat_id = self._directory.current.chat_id
             self._interrupt_playback()
             async with self._speaker_lock:
                 await self.audio.play_and_wait(self._sounds.path("start"))
@@ -410,9 +480,11 @@ class Runtime:
             ok = False
             if was and proc is not None and path is not None:
                 ok = await self.audio.stop_recording(proc, path)
+            chat_id = self._capture_chat_id
+            self._capture_chat_id = None
             cue: str | None
             if send and ok and path is not None and path.is_file():
-                self._enqueue_outgoing(path, duration)
+                self._enqueue_outgoing(path, duration, chat_id)
                 path.unlink(missing_ok=True)
                 self._outbox_wake.set()
                 cue = None
@@ -431,9 +503,10 @@ class Runtime:
             await self.play_cue(cue)
         await self.flush_deferred()
 
-    def _enqueue_outgoing(self, path: Path, duration: float) -> None:
+    def _enqueue_outgoing(self, path: Path, duration: float, chat_id: int | None = None) -> None:
         assert self._outbox is not None and self._directory is not None
-        chat_id = self._directory.current.chat_id
+        if chat_id is None:
+            chat_id = self._directory.current.chat_id
         target = chat_id if should_send_to(chat_id, self._allowed) else None
         if target is None:
             log.warning("no allowed family chat yet; the note stays in the outbox")
@@ -595,13 +668,124 @@ class Runtime:
             float(duration) if duration else None,
         )
 
-    async def _idle_loop(self) -> None:
-        """Future NFC cards revert to the family chat from here. No-op in v1."""
+    async def _card_loop(self) -> None:
+        """Apply taps queued by the NFC thread. Does not poll I2C itself."""
         assert self._directory is not None
         while not self._stop.is_set():
-            await asyncio.sleep(1)
-            if self._directory.revert_if_idle(time.monotonic()):
-                log.info("idle timeout, recipient is %s again", self._directory.current.display_name)
+            try:
+                uid = await asyncio.wait_for(self._cards.get(), timeout=0.5)
+            except TimeoutError:
+                continue
+            try:
+                await self._handle_card(uid)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("card handling failed")
+
+    async def _handle_card(self, uid: str) -> None:
+        assert self._directory is not None
+        try:
+            shown = normalize_uid(uid)
+        except ValueError:
+            shown = uid
+        chosen = self._directory.select_card(uid, time.monotonic())
+        if chosen is None:
+            log.info("unknown card %s", shown)
+            if self._sounds is not None:
+                self._spawn(self._play_speech(self._sounds.path("error")))
+            return
+        log.info("card %s selected chat %s (%s)", shown, chosen.chat_id, chosen.display_name)
+        if self._selection_path is not None:
+            try:
+                save_selection(self._selection_path, chat_id=chosen.chat_id, uid=shown)
+            except OSError as exc:
+                log.warning("could not save the selected card: %s", exc)
+        self._spawn(self._announce(chosen))
+
+    async def _announce(self, recipient) -> None:
+        if self._announcer is None:
+            return
+        try:
+            # espeak-ng is a blocking process. Keep it off the event loop so
+            # the button, the microphone, and Telegram keep running.
+            clip = await asyncio.to_thread(
+                self._announcer.clip_for,
+                recipient.display_name,
+                recipient.announce_clip,
+            )
+        except Exception:
+            log.exception("could not prepare the announcement")
+            return
+        if clip is None:
+            log.info("no announcement audio for %s", recipient.display_name)
+            return
+        await self._play_speech(clip)
+
+    def _speech_blocked(self) -> bool:
+        """True while a recording or a queued note owns the speaker."""
+        if self._capturing:
+            return True
+        coord = self._coord
+        if coord is None:
+            return False
+        return bool(coord.recording or coord.playing_id)
+
+    async def _play_speech(self, path: Path) -> None:
+        """Play a card name or an error tone. A missing speaker is logged.
+
+        Waits out an in-progress recording or queued note, and stops early
+        if one starts, so the record beep is not stuck behind a sentence.
+        The name is played after that recording finishes.
+        """
+        if not path.is_file():
+            log.warning("announcement file %s is missing", path)
+            return
+        proc = None
+        try:
+            while not self._stop.is_set():
+                while not self._stop.is_set() and self._speech_blocked():
+                    await asyncio.sleep(0.05)
+                if self._stop.is_set():
+                    return
+                async with self._speaker_lock:
+                    if self._speech_blocked():
+                        continue
+                    try:
+                        proc = await self.audio.play(path)
+                    except Exception:
+                        log.exception("announcement playback failed")
+                        return
+                    interrupted = False
+                    code: int | None = None
+                    while True:
+                        try:
+                            code = await asyncio.wait_for(proc.wait(), timeout=0.05)
+                            break
+                        except TimeoutError:
+                            if self._stop.is_set() or self._speech_blocked():
+                                interrupted = True
+                                if proc.returncode is None:
+                                    proc.terminate()
+                                try:
+                                    await asyncio.wait_for(proc.wait(), timeout=1)
+                                except TimeoutError:
+                                    proc.kill()
+                                break
+                    proc = None
+                    if interrupted:
+                        if self._stop.is_set():
+                            return
+                        continue
+                    if code not in (0, None):
+                        log.warning("could not play %s (ffmpeg %s)", path.name, code)
+                    return
+        except asyncio.CancelledError:
+            if proc is not None and proc.returncode is None:
+                proc.terminate()
+            raise
+        except Exception:
+            log.exception("announcement playback failed")
 
     async def _shutdown_audio(self) -> None:
         self._interrupt_playback()

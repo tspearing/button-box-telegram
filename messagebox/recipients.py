@@ -1,11 +1,10 @@
 """Who the box is talking to.
 
-Version 1 has a single recipient: the family chat. Later, an NFC card can
-call :meth:`RecipientDirectory.select_card` and the send path does not
-change. After ``idle_timeout_seconds`` with no activity the directory
-returns to the family chat. See ``docs/ROADMAP.md``.
-
-This module does not read cards. Nothing in v1 constructs a card reader.
+The default recipient is the family chat. A tapped NFC card calls
+:meth:`RecipientDirectory.select_card` and the send path does not change.
+The running service keeps that choice until a different card is tapped.
+It does not call :meth:`revert_if_idle`. That method remains so a timeout
+can be tested on its own. See ``docs/ROADMAP.md``.
 """
 
 from __future__ import annotations
@@ -37,10 +36,9 @@ def normalize_uid(uid: str) -> str:
 class RecipientDirectory:
     """The current recipient, defaulting to the family chat.
 
-    Card registration and selection are the stable hooks a future PN532
-    driver will call. They are not wired to hardware in v1. Passing time
-    into :meth:`revert_if_idle` is enough for the idle-timeout behaviour
-    once something starts calling :meth:`select_card`.
+    :meth:`select_card` is what a tap calls. The service leaves the result
+    in place. :meth:`revert_if_idle` still returns to the family chat when
+    it is called, and is not part of the running box.
     """
 
     def __init__(self, family: Recipient, *, idle_timeout_seconds: float = 120.0) -> None:
@@ -66,11 +64,9 @@ class RecipientDirectory:
         self._by_key[recipient.key] = recipient
 
     def register_card(self, uid: str, recipient_key: str) -> None:
-        """Map a spare card or fob to a recipient.
+        """Map a card uid to a recipient.
 
-        Re-registering the same uid replaces the previous person. The
-        roadmap describes when the box will enter this mode; v1 only
-        exposes the operation.
+        Re-registering the same uid replaces the previous chat.
         """
         if recipient_key not in self._by_key:
             raise KeyError(recipient_key)

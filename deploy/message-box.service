@@ -9,7 +9,7 @@ StartLimitBurst=8
 Type=simple
 User=messagebox
 Group=messagebox
-SupplementaryGroups=gpio audio plugdev
+SupplementaryGroups=gpio audio plugdev i2c
 UMask=0077
 # lgpio creates its notify pipe in the working directory. /opt/message-box
 # is not writable by the service user; the data directory is.

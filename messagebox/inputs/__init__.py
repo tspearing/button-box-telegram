@@ -1,4 +1,4 @@
-"""Input sources. Hardware GPIO and the dev-mode keyboard."""
+"""Input sources. Hardware GPIO, the NFC reader, and the dev-mode keyboard."""
 
 from messagebox.inputs.base import ButtonEdge, ButtonSource, CardSource
 

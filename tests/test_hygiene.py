@@ -39,9 +39,11 @@ def test_log_lines_do_not_keep_the_token(monkeypatch):
 
 def test_install_and_service_match_the_pi_setup():
     script = (ROOT / "install.sh").read_text(encoding="utf-8")
-    for package in ("ffmpeg", "alsa-utils", "python3-venv", "python3-lgpio"):
+    for package in ("ffmpeg", "alsa-utils", "python3-venv", "python3-lgpio", "espeak-ng", "i2c-tools"):
         assert package in script
     assert "chmod 600" in script
+    assert "groupadd --system i2c" in script
+    assert script.index("groupadd --system i2c") < script.index("systemctl enable")
     service = (ROOT / "deploy/message-box.service").read_text(encoding="utf-8")
     assert "EnvironmentFile=/etc/message-box/env" in service
     assert "User=messagebox" in service
@@ -50,6 +52,8 @@ def test_install_and_service_match_the_pi_setup():
     assert "WorkingDirectory=/var/lib/message-box" in service
     assert "Environment=LG_WD=/var/lib/message-box" in service
     assert "LG_WD=/var/lib/message-box" in script
+    groups = service.split("SupplementaryGroups=", 1)[1].splitlines()[0]
+    assert "i2c" in groups.split()
 
 
 def test_bridge_builds_on_telegram_21(tmp_path):
@@ -74,6 +78,11 @@ def test_bridge_builds_on_telegram_21(tmp_path):
     assert "chatid" in commands
     assert "start" in commands
     assert app.updater is not None
+
+
+def test_service_does_not_revert_cards_on_idle():
+    runtime = (ROOT / "messagebox/runtime.py").read_text(encoding="utf-8")
+    assert "revert_if_idle" not in runtime
 
 
 def test_readme_uses_physical_pin_numbers():
