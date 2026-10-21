@@ -13,6 +13,9 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from messagebox.announce import MAX_ANNOUNCE_CHARS, clean_announce_text
+from messagebox.recipients import normalize_uid
+
 
 DEFAULT_DATA_DIR = Path("/var/lib/message-box")
 DEFAULT_ENV_FILE = Path("/etc/message-box/env")
@@ -68,7 +71,24 @@ class PathsConfig:
 
 @dataclass(frozen=True)
 class RecipientConfig:
+    # Older configs set this. The service does not revert to the default chat.
     idle_timeout_seconds: float = 120.0
+
+
+@dataclass(frozen=True)
+class NfcConfig:
+    enabled: bool = True
+    i2c_bus: int = 1
+    # 36 is 0x24, the PN532's I2C address. TOML has no hex literals.
+    i2c_address: int = 36
+
+
+@dataclass(frozen=True)
+class CardConfig:
+    uid: str
+    chat_id: int
+    announce: str = ""
+    announce_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +105,8 @@ class AppConfig:
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     recipient: RecipientConfig = field(default_factory=RecipientConfig)
+    nfc: NfcConfig = field(default_factory=NfcConfig)
+    cards: tuple[CardConfig, ...] = ()
     dev_keys: DevConfig = field(default_factory=DevConfig)
     log_level: str = "INFO"
     dev_mode: bool = False
@@ -276,8 +298,10 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
     telegram = data.get("telegram") or {}
     paths = data.get("paths") or {}
     recipient = data.get("recipient") or {}
+    nfc = data.get("nfc") or {}
     dev_keys = data.get("dev") or {}
     logging_table = data.get("logging") or {}
+    raw_cards = data.get("cards") or []
     family = telegram.get("family_chat_id", None)
     if family is not None:
         family = int(family)
@@ -324,6 +348,12 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
         recipient=RecipientConfig(
             idle_timeout_seconds=float(recipient.get("idle_timeout_seconds", 120))
         ),
+        nfc=NfcConfig(
+            enabled=bool(nfc.get("enabled", True)),
+            i2c_bus=int(nfc.get("i2c_bus", 1)),
+            i2c_address=int(nfc.get("i2c_address", 36)),
+        ),
+        cards=_cards(raw_cards, allowed),
         dev_keys=DevConfig(
             repeat_window_seconds=float(dev_keys.get("repeat_window_seconds", 0.7)),
             repeat_gap_seconds=float(dev_keys.get("repeat_gap_seconds", 0.22)),
@@ -353,6 +383,55 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("debounce_seconds cannot be negative")
     if config.button.debounce_seconds >= config.button.hold_seconds:
         raise ValueError("debounce_seconds must be shorter than the hold threshold")
+    if not 0 <= config.nfc.i2c_bus <= 9:
+        raise ValueError("nfc.i2c_bus must be from 0 to 9")
+    if not 0x08 <= config.nfc.i2c_address <= 0x77:
+        raise ValueError("nfc.i2c_address must be a 7-bit I2C address (36 is 0x24)")
+    seen: set[str] = set()
+    for card in config.cards:
+        if card.uid in seen:
+            raise ValueError(f"card uid {card.uid} is listed more than once")
+        seen.add(card.uid)
+
+
+def _cards(raw, allowed: tuple[int, ...]) -> tuple[CardConfig, ...]:
+    if not isinstance(raw, list):
+        raise ValueError("cards must be a list of [[cards]] tables")
+    cards: list[CardConfig] = []
+    for entry in raw:
+        cards.append(_one_card(entry, allowed))
+    return tuple(cards)
+
+
+def _one_card(entry, allowed: tuple[int, ...]) -> CardConfig:
+    if not isinstance(entry, dict):
+        raise ValueError("each [[cards]] entry must be a table")
+    uid = _card_uid(str(entry.get("uid", "")))
+    if "chat_id" not in entry:
+        raise ValueError(f"card {uid} needs a chat_id")
+    chat_id = int(entry["chat_id"])
+    if chat_id not in allowed:
+        raise ValueError(f"card {uid} chat_id {chat_id} is not in allowed_chat_ids")
+    announce = clean_announce_text(str(entry.get("announce", "") or ""))
+    if len(announce) > MAX_ANNOUNCE_CHARS:
+        raise ValueError(f"card {uid} announce text is longer than {MAX_ANNOUNCE_CHARS} characters")
+    file_raw = entry.get("announce_file")
+    announce_file = Path(str(file_raw)) if file_raw else None
+    if not announce and announce_file is None:
+        raise ValueError(f"card {uid} needs announce text or announce_file")
+    return CardConfig(uid=uid, chat_id=chat_id, announce=announce, announce_file=announce_file)
+
+
+def _card_uid(uid: str) -> str:
+    try:
+        cleaned = normalize_uid(uid)
+    except ValueError as exc:
+        raise ValueError(f"card uid {uid!r} is empty") from exc
+    if any(char not in "0123456789ABCDEF" for char in cleaned):
+        raise ValueError(f"card uid {uid!r} is not hex")
+    if len(cleaned) % 2 or not 8 <= len(cleaned) <= 20:
+        raise ValueError(f"card uid {uid!r} must be 4 to 10 bytes of hex")
+    return cleaned
 
 
 def _replace(obj, **changes):

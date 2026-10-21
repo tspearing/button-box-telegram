@@ -3,6 +3,7 @@
     message-box                 run the box (or the systemd service)
     message-box --dev           keyboard instead of GPIO, for a laptop
     message-box --check-audio   beep, record, play back
+    message-box --scan-card     print the UID of the next tapped NFC card
     message-box chatid          list chats that have talked to the bot
 """
 
@@ -40,6 +41,11 @@ def main(argv: list[str] | None = None) -> None:
         help="find the USB mic and speaker, play a beep, record 2 seconds, play it back",
     )
     parser.add_argument(
+        "--scan-card",
+        action="store_true",
+        help="print the UID of the next tapped NFC card (stop the service first)",
+    )
+    parser.add_argument(
         "command",
         nargs="?",
         default="run",
@@ -55,6 +61,14 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1) from exc
 
     setup_logging(config.log_level)
+
+    if args.scan_card:
+        from messagebox.inputs.pn532 import scan_card
+
+        try:
+            raise SystemExit(scan_card(config.nfc.i2c_bus, config.nfc.i2c_address))
+        except KeyboardInterrupt:
+            raise SystemExit(1) from None
 
     if args.command == "chatid":
         token = token_from_config(config)

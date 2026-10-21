@@ -1,4 +1,4 @@
-"""The family chat is the default. Cards can select someone else later."""
+"""The family chat is the default. A card can select another chat."""
 
 import pytest
 

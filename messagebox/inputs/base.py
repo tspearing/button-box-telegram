@@ -1,8 +1,7 @@
-"""Button inputs.
+"""Button and card inputs.
 
 ``ButtonSource`` is the arcade button (GPIO on the Pi, keyboard in dev mode).
-``CardSource`` is the slot a future PN532 V3 driver will fill. v1 does not
-ship a card reader; see ``docs/ROADMAP.md``.
+``CardSource`` is the PN532. The driver is ``messagebox.inputs.pn532``.
 """
 
 from __future__ import annotations
@@ -23,11 +22,9 @@ class ButtonSource(Protocol):
 
 
 class CardSource(Protocol):
-    """Future PN532 over I2C, reading NTAG215 card and fob uids.
+    """PN532 over I2C. ``on_card(uid)`` runs when a tag is newly presented.
 
-    Not implemented in v1. A driver should call ``on_card(uid)`` when a tag
-    is presented. The runtime will pass that uid to
-    ``RecipientDirectory.select_card``.
+    The callback must only queue the UID. The runtime selects the chat.
     """
 
     def start(self, on_card: Callable[[str], None]) -> None: ...

@@ -32,6 +32,10 @@ def test_example_config_loads():
     assert config.audio.play_empty_tone is False
     assert config.paths.data_dir == Path("/var/lib/message-box")
     assert config.paths.env_file == Path("/etc/message-box/env")
+    assert config.cards == ()
+    assert config.nfc.i2c_bus == 1
+    assert config.nfc.i2c_address == 36
+    assert config.nfc.enabled is True
 
 
 def test_single_allowed_chat_is_the_family():
@@ -135,3 +139,103 @@ def test_mic_override_from_the_environment(monkeypatch):
     monkeypatch.setenv("MESSAGEBOX_MIC", "plughw:4,0")
     config = load_config(ROOT / "config.example.toml", dev=False)
     assert config.audio.mic_device == "plughw:4,0"
+
+
+def _write(tmp_path, text: str) -> Path:
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_two_cards_load_and_a_third_chat_is_rejected(tmp_path):
+    config = load_config(
+        _write(
+            tmp_path,
+            """
+            [telegram]
+            allowed_chat_ids = [-1000000000001, -1000000000002]
+            family_chat_id = -1000000000001
+
+            [[cards]]
+            uid = "04:a1:b2:c3:d4:e5:f6"
+            chat_id = -1000000000001
+            announce = "German"
+
+            [[cards]]
+            uid = "04B1C2D3E4F506"
+            chat_id = -1000000000002
+            announce = "English\\nroom"
+            announce_file = "/var/lib/message-box/clips/english.wav"
+            """,
+        )
+    )
+    assert config.cards[0].uid == "04A1B2C3D4E5F6"
+    assert config.cards[0].chat_id == -1000000000001
+    assert config.cards[0].announce == "German"
+    assert config.cards[1].announce == "English room"
+    assert config.cards[1].announce_file == Path("/var/lib/message-box/clips/english.wav")
+    with pytest.raises(ValueError, match="not in allowed_chat_ids"):
+        load_config(
+            _write(
+                tmp_path,
+                """
+                [telegram]
+                allowed_chat_ids = [-1000000000001]
+                [[cards]]
+                uid = "04A1B2C3D4E5F6"
+                chat_id = -1000000000002
+                announce = "English"
+                """,
+            )
+        )
+
+
+def test_duplicate_and_bad_uids_are_rejected(tmp_path):
+    with pytest.raises(ValueError, match="more than once"):
+        load_config(
+            _write(
+                tmp_path,
+                """
+                [telegram]
+                allowed_chat_ids = [-1000000000001]
+                [[cards]]
+                uid = "04A1B2C3"
+                chat_id = -1000000000001
+                announce = "German"
+                [[cards]]
+                uid = "04:a1:b2:c3"
+                chat_id = -1000000000001
+                announce = "German again"
+                """,
+            )
+        )
+    with pytest.raises(ValueError, match="not hex"):
+        load_config(
+            _write(
+                tmp_path,
+                """
+                [telegram]
+                allowed_chat_ids = [-1000000000001]
+                [[cards]]
+                uid = "zzzzzzzz"
+                chat_id = -1000000000001
+                announce = "German"
+                """,
+            )
+        )
+
+
+def test_a_card_needs_words_or_a_file(tmp_path):
+    with pytest.raises(ValueError, match="announce"):
+        load_config(
+            _write(
+                tmp_path,
+                """
+                [telegram]
+                allowed_chat_ids = [-1000000000001]
+                [[cards]]
+                uid = "04A1B2C3D4E5F6"
+                chat_id = -1000000000001
+                """,
+            )
+        )

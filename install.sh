@@ -26,7 +26,32 @@ apt-get install -y \
   python3-venv \
   python3-pip \
   python3-lgpio \
-  ca-certificates
+  ca-certificates \
+  espeak-ng \
+  i2c-tools
+
+echo "Enabling I2C for the PN532..."
+# raspi-config: 0 enables I2C, 1 disables it.
+if command -v raspi-config >/dev/null 2>&1; then
+  raspi-config nonint do_i2c 0 || echo "Could not enable I2C with raspi-config."
+fi
+boot_cfg=""
+if [[ -f /boot/firmware/config.txt ]]; then
+  boot_cfg="/boot/firmware/config.txt"
+elif [[ -f /boot/config.txt ]]; then
+  boot_cfg="/boot/config.txt"
+fi
+if [[ -n "${boot_cfg}" ]] && ! grep -Eq '^[[:space:]]*dtparam=i2c_arm=on' "${boot_cfg}"; then
+  printf '\n# Message Box NFC reader\ndtparam=i2c_arm=on\n' >> "${boot_cfg}"
+  echo "Added dtparam=i2c_arm=on to ${boot_cfg}."
+  echo "Reboot if 'i2cdetect -y 1' does not show 24."
+fi
+modprobe i2c-dev 2>/dev/null || true
+# The systemd unit lists SupplementaryGroups=i2c. systemd will not start
+# the service if that group does not exist.
+if ! getent group i2c >/dev/null; then
+  groupadd --system i2c || true
+fi
 
 echo "Copying the program to ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}"
@@ -68,7 +93,7 @@ if ! id messagebox >/dev/null 2>&1; then
     messagebox
 fi
 
-for group in audio gpio plugdev; do
+for group in audio gpio plugdev i2c; do
   if getent group "${group}" >/dev/null; then
     usermod -a -G "${group}" messagebox
   else
@@ -122,3 +147,6 @@ fi
 echo
 echo "Bench test the mic and speaker with:"
 echo "  sudo -u messagebox ${VENV}/bin/python -m messagebox --check-audio"
+echo "Read an NFC card UID with the service stopped:"
+echo "  sudo systemctl stop message-box"
+echo "  sudo -u messagebox ${VENV}/bin/python -m messagebox --scan-card"

@@ -2,14 +2,15 @@
 
 A screen-free voice-note box for a young child. There is one big button.
 
-- **Hold** the button until you hear a beep, talk, and let go. The box sends a Telegram voice note to the family chat.
+- **Hold** the button until you hear a beep, talk, and let go. The box sends a Telegram voice note to the selected chat.
 - **Tap** the button to hear the oldest note waiting in the queue. It is deleted after it plays.
+- **Tap an NFC card** to choose which chat the next recording goes to. The speaker says that chat's name. The choice stays until a different card is tapped.
 - Notes never play by themselves, and a new note never interrupts a recording.
 - A lamp (optional) stays on while something is waiting, blinks quickly while recording, and is off when the queue is empty.
 
 It runs on a Raspberry Pi 5 with 64-bit Raspberry Pi OS (Bookworm, Lite is ideal) and a Telegram bot you create yourself. The idea is in the same family as [button.box](https://button.box/diy). This is separate software: it does not use WhatsApp, and it does not use the Button Box installer.
 
-Version 1 talks to one family chat. Cards that pick a person (an NFC reader, NTAG215 tags) are planned in [docs/ROADMAP.md](docs/ROADMAP.md) and the code has a place for them, but they are not built yet.
+Without a reader, or before any card is tapped, recordings go to the family chat. Each extra chat gets its own NTAG215 card. Tapping a card and pressing the button work at the same time: the reader is polled on its own thread and does not block recording or Telegram. See [docs/ROADMAP.md](docs/ROADMAP.md) for what is still not built.
 
 ## What you need
 
@@ -23,6 +24,8 @@ Version 1 talks to one family chat. Cards that pick a person (an NFC reader, NTA
 | 100mm arcade button | With a microswitch, and a 12V lamp if you want the light. |
 | Two wires for the switch | The switch connects to the Pi directly. No resistor. |
 | Lamp parts, optional | A small NPN transistor (2N2222), a 1k resistor, a 100k resistor, and a 12V supply. See below. |
+| HiLetgo PN532 NFC module V3 | I2C mode, 3.3V. Address 0x24 on bus 1. Optional: with no reader the box stays a single chat. |
+| NTAG215 cards | One card per chat. Two are enough to start. More chats are more cards later. |
 
 You can build and test all of this on the bench, with no box around it.
 
@@ -32,11 +35,13 @@ You can build and test all of this on the bench, with no box around it.
 2. The Pi downloads it and stores it on the SD card. The lamp comes on. Nothing plays yet.
 3. The child taps the button. The oldest note plays. It is then deleted. Tap again for the next one.
 4. The child holds the button. After about 0.6 seconds there is a short beep. That means "talk now".
-5. They let go. The recording is turned into an OGG/Opus file and sent to the family chat. A second, higher beep means Telegram accepted it.
+5. They let go. The recording is turned into an OGG/Opus file and sent to the selected chat. A second, higher beep means Telegram accepted it.
 6. If they let go less than about a second after the beep, the recording is thrown away and a low tone plays instead. The longest recording is 2 minutes; it sends itself at 2 minutes even if the button is still held.
 7. A tap when nothing is waiting does nothing. You can turn on a soft "nothing there" tone in the config (`play_empty_tone = true`).
 
-If the Wi-Fi drops, recordings wait on disk and are sent when the network comes back. Notes that arrived while the Pi was offline are picked up when Telegram reconnects. Nothing is played during a recording, including a note that arrives halfway through.
+If the Wi-Fi drops, recordings wait on disk and are sent when the network comes back. Notes that arrived while the Pi was offline are picked up when Telegram reconnects. Nothing is played during a recording, including a note that arrives halfway through. A card announcement waits until the recording (and any queued note that is playing) has finished. If a recording starts while the name is playing, the name stops so the record beep can play, then the name plays again afterwards.
+
+A card left on the reader does not repeat its name. Lift it and tap again to hear it, even when that chat is already selected. The last card is remembered in `/var/lib/message-box/selection.json` and restored on boot without speaking. The first boot, with nothing saved, uses `family_chat_id`.
 
 ## Wiring
 
@@ -52,18 +57,22 @@ Pin 1 is marked on the Pi 5 board (it is a 3.3V pin). Count from that pin. One r
 | Button switch, other side | ground | **9** (GND) |
 | Lamp driver, optional | 26 | **37** |
 | Lamp driver ground | ground | **39** (or any GND) |
+| PN532 VCC (3.3V only) | — | **1** |
+| PN532 SDA | 2 (I2C, not a config pin) | **3** |
+| PN532 SCL | 3 (I2C, not a config pin) | **5** |
+| PN532 GND | ground | **6** |
 
 ```
                  odd pins          even pins
                  (pin 1 row)
-        3.3V      1  o  o  2       5V
-                  3  o  o  4
-                  5  o  o  6
+        3.3V      1  o  o  2       5V        <-- PN532 VCC. Not pin 2.
+        SDA       3  o  o  4                 <-- PN532 SDA
+        SCL       5  o  o  6       GND       <-- PN532 SCL, and PN532 GND on pin 6
                   7  o  o  8
         GND       9  o  o  10
-        GPIO17   11  o  o  12      <-- button switch between pin 11 and pin 9
+        GPIO17   11  o  o  12                <-- button switch between pin 11 and pin 9
         ...
-        GPIO26   37  o  o  38      <-- lamp transistor, optional
+        GPIO26   37  o  o  38                <-- lamp transistor, optional
         GND      39  o  o  40
 ```
 
@@ -106,6 +115,14 @@ When you do want the lamp, use the Pi pin to switch a transistor, and power the 
 Set `lamp.enabled = false` in the config if you want the pin to stay off. Default is on, pin BCM 26.
 
 While messages are waiting the lamp stays lit (`waiting = "steady"`). Change that to `"blink"` for a short flash every couple of seconds. During recording it blinks quickly either way.
+
+### The NFC reader
+
+Power the PN532 from **3.3V (physical pin 1)** only. Do not use physical pin 2 (5V). The module must be in I2C mode. On a board that is already working, `i2cdetect -y 1` prints `24` at address 0x24. SDA is physical pin 3, SCL is physical pin 5, and ground is physical pin 6.
+
+`install.sh` turns on I2C (`dtparam=i2c_arm=on`), installs `i2c-tools` and `espeak-ng`, and puts the `messagebox` user in the `i2c` group. The systemd unit also lists that group. If `i2cdetect` does not show `24` after a fresh install, reboot once so the device tree change is applied. A missing reader does not stop the service: the log says the reader is not available, and recordings keep going to the default chat.
+
+BCM 26 (physical pin 37) stays free for the lamp. The button stays on BCM 17 (physical pin 11). The reader does not use either pin.
 
 ## 1. Flash the SD card
 
@@ -152,7 +169,7 @@ cd button-box-telegram
 sudo bash install.sh
 ```
 
-The script installs `ffmpeg`, `alsa-utils`, `python3-venv`, and `python3-lgpio`, creates a virtualenv at `/opt/message-box/venv`, a user called `messagebox`, and a systemd service that starts on boot. It is safe to run again after `git pull`. It will not overwrite an existing token file or config.
+The script installs `ffmpeg`, `alsa-utils`, `python3-venv`, `python3-lgpio`, `espeak-ng`, and `i2c-tools`, creates a virtualenv at `/opt/message-box/venv`, a user called `messagebox`, and a systemd service that starts on boot. It enables I2C and adds that user to the `i2c` group. It is safe to run again after `git pull`. It will not overwrite an existing token file or config.
 
 It writes:
 
@@ -225,7 +242,70 @@ Message the bot first (`/start` in a private chat, or any message in the group).
 
 Only one program can poll a bot at a time. Leave the service running and use `/chatid`, or stop the service and use the command. Not both.
 
-## 5. Bench test, no enclosure
+## 5. NFC cards, to choose a chat
+
+Each chat gets one card. Tapping it selects that chat until a different card is tapped. There is no idle timeout and no automatic return to the family chat. The button still records and plays; it does not wait for the reader.
+
+After `git pull` on a box that is already installed:
+
+```bash
+cd button-box-telegram
+git pull
+sudo bash install.sh
+i2cdetect -y 1
+```
+
+`i2cdetect` should print `24`. If the line was just added to the boot config and `24` is missing, reboot once (`sudo reboot`) and check again. Skip the reboot when `24` is already there.
+
+Stop the service before scanning. The service and `--scan-card` cannot share the reader.
+
+```bash
+sudo systemctl stop message-box
+sudo -u messagebox /opt/message-box/venv/bin/python -m messagebox --scan-card
+```
+
+Tap the first card. The command prints a UID and a `[[cards]]` snippet. Run it again and tap the second card. Then edit `/etc/message-box/config.toml`. Use the chat ids already in `allowed_chat_ids` (the same numbers `/chatid` printed). The numbers below are placeholders.
+
+```toml
+[telegram]
+allowed_chat_ids = [-1000000000001, -1000000000002]
+family_chat_id = -1000000000001
+
+[[cards]]
+uid = "PASTE_UID_FROM_SCAN"
+chat_id = -1000000000001
+announce = "German"
+
+[[cards]]
+uid = "PASTE_UID_FROM_SCAN"
+chat_id = -1000000000002
+announce = "English"
+```
+
+`announce` is the offline phrase espeak-ng says on every tap, including a tap of the card that is already selected. A wav file replaces speech when the file is present:
+
+```toml
+announce_file = "/var/lib/message-box/clips/german.wav"
+```
+
+If that file is missing, the box logs it and speaks `announce` instead. `chat_id` must be in `allowed_chat_ids`. Any other id is rejected at startup (`Config error` in the journal) and the service does not start.
+
+```bash
+sudo systemctl restart message-box
+journalctl -u message-box -f
+```
+
+Tap a card. The log shows the UID and the chat, and the speaker says the name when a speaker is plugged in. Hold the button and confirm the voice note arrives in that chat. Tap the other card and record again. A card that is not in the config logs `unknown card` plus the UID, and plays a short error tone when a speaker exists. It does not change the selected chat.
+
+The USB speaker is not required for switching. With no playback device the service logs that the announcement could not be played and keeps running. The chat still changes.
+
+After a reboot, the log line `restored card` means the last choice was loaded and no new tap is required. A recording then goes to that chat.
+
+`--scan-card` does not need a bot token. An unknown card in the journal is another way to read a UID while the service is up, if you would rather not stop it to scan.
+
+Add more chats later with more `[[cards]]` tables and more ids in `allowed_chat_ids`. Restart after editing the config.
+
+## 6. Bench test, no enclosure
 
 Do this before you build a case.
 
@@ -264,7 +344,7 @@ Watch the log, then hold the button for a couple of seconds after the beep and l
 journalctl -u message-box -f
 ```
 
-The family chat should get a voice note, and you should hear the "sent" beep. Then reply with a voice note from your phone. The log should say it was queued. Tap the button (a press shorter than half a second). The note plays, and a second tap does nothing if the queue is empty.
+The selected chat should get a voice note, and you should hear the "sent" beep. Then reply with a voice note from your phone. The log should say it was queued. Tap the button (a press shorter than half a second). The note plays, and a second tap does nothing if the queue is empty. A card tap during this test does not block the button.
 
 Leave the lamp disconnected for this test. The log will still say `lamp waiting` or `lamp recording` if GPIO is working. If opening the lamp pin fails, the box keeps running without it.
 
@@ -315,7 +395,7 @@ sudo systemctl stop message-box
 sudo -u messagebox /opt/message-box/venv/bin/python -m messagebox --dev
 ```
 
-`--check-audio` does not need a token. `python -m messagebox chatid` does.
+`--check-audio` does not need a token. `python -m messagebox chatid` does. `--scan-card` does not need a token, but it does need the PN532, so it is a Pi command. `--dev` does not open the reader.
 
 ### Tests
 
@@ -324,7 +404,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The tests cover the queue (order, and that it is still there after a new process opens the same folder), the button state machine (tap versus hold, too-short recordings, the two-minute cap), the rule that an incoming note does not start playback, and the recipient object the NFC work will call later. They do not need a Pi or a Telegram token.
+The tests cover the queue (order, and that it is still there after a new process opens the same folder), the button state machine (tap versus hold, too-short recordings, the two-minute cap), the rule that an incoming note does not start playback, card selection, the PN532 frame parser, and announcements with a stand-in for espeak-ng. They do not need a Pi, a reader, or a Telegram token.
 
 ## Config reference
 
@@ -340,7 +420,9 @@ The tests cover the queue (order, and that it is still there after a new process
 | `audio.mic_device` / `speaker_device` | `auto` | Or an ALSA device such as `plughw:2,0`. |
 | `audio.play_empty_tone` | `false` | Soft tone when a tap finds an empty queue. |
 | `telegram.allowed_chat_ids` | empty | Chats that may send, and the only chats we will send to. |
-| `recipient.idle_timeout_seconds` | `120` | For a future NFC card. v1 always uses the family chat. |
+| `nfc.i2c_bus` / `i2c_address` | `1` / `36` | PN532 bus and address. 36 is 0x24. |
+| `[[cards]]` | none | `uid`, `chat_id`, `announce`, optional `announce_file`. |
+| `recipient.idle_timeout_seconds` | `120` | Ignored. The selected card does not time out. |
 
 Sounds (the beep, the sent chime, the too-short tone) are generated by the program as tiny WAV files. They are not recorded from anywhere else.
 
@@ -352,7 +434,7 @@ Sounds (the beep, the sent chime, the too-short tone) are generated by the progr
 
 **No sound, or the wrong device.** `arecord -l` and `aplay -l`. Set `mic_device` and `speaker_device`. The hints `TONOR` and `LIELONGREN` are only used for auto-detection. HDMI and the Pi headphone jack are skipped on purpose. `--check-audio` warns when it had to use ALSA's default device, which is often silent.
 
-**Recording fails immediately.** Check the mic is plugged in. `journalctl -u message-box -n 50` will say if ffmpeg could not open the device. The `messagebox` user must be in the `audio` group; `install.sh` does that. If you created the user by hand, `sudo usermod -a -G audio,gpio messagebox` and restart the service.
+**Recording fails immediately.** Check the mic is plugged in. `journalctl -u message-box -n 50` will say if ffmpeg could not open the device. The `messagebox` user must be in the `audio` group; `install.sh` does that. If you created the user by hand, `sudo usermod -a -G audio,gpio,i2c messagebox` and restart the service.
 
 **The button does nothing.** The switch wires go between physical pin 11 and physical pin 9, using COM and NO. In the log you want `button press` and `button release`. `GPIO button failed` means lgpio cannot open the chip: install `python3-lgpio`, and the service user needs the `gpio` group. The pin factory is lgpio on purpose, because RPi.GPIO does not work on the Pi 5.
 
@@ -366,7 +448,15 @@ Sounds (the beep, the sent chime, the too-short tone) are generated by the progr
 
 **`Config error: Permission denied: 'config.toml'`.** The process found `config.toml` in the directory you launched from, and the `messagebox` user cannot read it. That file is now skipped. Put the real settings in `/etc/message-box/config.toml`. `--check-audio`, `--dev`, and `chatid` can be started from any directory.
 
-**The service will not stay up.** `systemctl status message-box` and the journal. A missing token or a `family_chat_id` that is not in `allowed_chat_ids` exits on purpose. An empty allowlist does not exit: the bot stays up so `/chatid` works, and recordings are kept until you set the chat and restart.
+**The service will not stay up.** `systemctl status message-box` and the journal. A missing token, a `family_chat_id` that is not in `allowed_chat_ids`, or a card whose `chat_id` is not on that list exits on purpose. An empty allowlist does not exit: the bot stays up so `/chatid` works, and recordings are kept until you set the chat and restart. `Failed to resolve group i2c` means the unit was installed before the `i2c` group existed. Run `sudo bash install.sh` again.
+
+**No `24` in `i2cdetect -y 1`.** The reader is unplugged, still in UART mode, or I2C is off. Power is physical pin 1 (3.3V), ground pin 6, SDA pin 3, SCL pin 5. Re-run `sudo bash install.sh` and reboot if it added `dtparam=i2c_arm=on`. The service still runs without the reader.
+
+**A card tap does nothing.** The UID in the log is `unknown card` until that UID is a `[[cards]]` entry. `--scan-card` while the service is running fails or mis-reads because both want the PN532. Stop the service, scan, edit the config, start the service.
+
+**The name is not spoken.** espeak-ng comes from `install.sh`. The log says when it is missing, when the wav override is missing, or when playback failed because no speaker is plugged in. None of those stop the service, and the chat still changes. A card that is already selected speaks again only after you lift it and tap again.
+
+**`--scan-card` says the reader is in use.** `sudo systemctl stop message-box`, then scan. Start the service when both cards are in the config.
 
 **ProtectSystem errors.** The service is locked down so it can only write under `/var/lib/message-box`. If a future audio library needs another path, that is the `ProtectSystem` and `ReadWritePaths` lines in `deploy/message-box.service`.
 
@@ -383,9 +473,10 @@ The allowlist is the whole of the access control in v1. Do not add the bot to a 
 | `messagebox/button_machine.py` | Tap versus hold. No GPIO. |
 | `messagebox/coordinator.py` | What a tap, a hold, and an incoming note do. |
 | `messagebox/queue_store.py` | On-disk inbox and outbox. |
-| `messagebox/recipients.py` | Who we are sending to. Family chat now, cards later. |
-| `messagebox/inputs/` | GPIO button, keyboard, and the `CardSource` slot. |
-| `messagebox/runtime.py` | Wires audio, the lamp, and Telegram together. |
+| `messagebox/recipients.py` | Who we are sending to. The family chat, or the last card. |
+| `messagebox/inputs/` | GPIO button, keyboard, and the PN532 reader. |
+| `messagebox/announce.py` | espeak-ng, or a wav file, for the card name. |
+| `messagebox/runtime.py` | Wires audio, the lamp, cards, and Telegram together. |
 | `install.sh`, `deploy/message-box.service` | Pi install and boot. |
 
-`python -m messagebox` is the program. `python -m messagebox --help` lists `--dev`, `--check-audio`, and `chatid`. Telegram is [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) version 21 (the `21.x` line, not 22).
+`python -m messagebox` is the program. `python -m messagebox --help` lists `--dev`, `--check-audio`, `--scan-card`, and `chatid`. Telegram is [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) version 21 (the `21.x` line, not 22).
