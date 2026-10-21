@@ -13,12 +13,14 @@ selected, and it announces again.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import logging
 import os
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 from messagebox.recipients import normalize_uid
@@ -40,6 +42,28 @@ IN_AUTO_POLL = bytes((0x60, 0x01, 0x01, 0x00))
 
 _I2C_SLAVE = 0x0703
 _I2C_TIMEOUT = 0x0702  # unit is 10 ms
+# The PN532 holds SCL while it wakes (often hundreds of microseconds, up to
+# about 2 ms). The Pi's I2C controller aborts that stretch at the default
+# clock. 10 kHz is slow enough that the stretch fits inside a clock pulse.
+# install.sh writes this into the boot config. It applies only after reboot.
+I2C_BAUDRATE_HZ = 10000
+# tBUF in the PN532 I2C timing table: wait after STOP before the next START.
+_BUS_FREE_SECONDS = 0.005
+_INIT_ATTEMPTS = 4
+# Pi 5's I2C driver reports a NAK as EREMOTEIO (121). Older Pi drivers used
+# EIO (5). A NAK while the chip is waking, or while it is not ready to be
+# read, is normal and must be retried.
+_RETRYABLE_ERRNOS = frozenset(
+    number
+    for number in (
+        errno.EIO,
+        errno.ETIMEDOUT,
+        errno.EAGAIN,
+        errno.ENXIO,
+        getattr(errno, "EREMOTEIO", 121),
+    )
+    if number is not None
+)
 
 
 def encode_frame(tfi: int, data: bytes) -> bytes:
@@ -60,6 +84,51 @@ def encode_frame(tfi: int, data: bytes) -> bytes:
 def build_frame(command: bytes) -> bytes:
     """A command frame from the host to the PN532."""
     return encode_frame(HOST_TO_PN532, command)
+
+
+def _retryable(exc: BaseException) -> bool:
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) in _RETRYABLE_ERRNOS
+
+
+def read_i2c_clock_hz(bus: int) -> int | None:
+    """The clock the running kernel is using, or None if sysfs has no value."""
+    path = Path(f"/sys/class/i2c-adapter/i2c-{bus}/of_node/clock-frequency")
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if len(raw) < 4:
+        return None
+    return int.from_bytes(raw[:4], "big")
+
+
+def explain_i2c_failure(exc: BaseException, *, bus: int, address: int) -> str:
+    """What to print when the chip ACKs its address but data transfers fail."""
+    number = getattr(exc, "errno", None)
+    parts = [f"PN532 at 0x{address:02x} on i2c-{bus} failed ({exc})."]
+    if isinstance(exc, TimeoutError) or number in (121, errno.EIO, None):
+        parts.append(
+            "i2cdetect can still show 24. A Pi 5 reports a NAK from the PN532 "
+            "as errno 121, and the chip also clock-stretches."
+        )
+        clock = read_i2c_clock_hz(bus)
+        if clock is None:
+            parts.append("The live I2C clock could not be read.")
+        else:
+            parts.append(f"The live I2C clock is {clock} Hz.")
+        parts.append(
+            "install.sh sets dtparam=i2c_arm_baudrate="
+            f"{I2C_BAUDRATE_HZ} in the boot config. That speed is used only after a reboot."
+        )
+        if clock is not None and clock != I2C_BAUDRATE_HZ:
+            parts.append("A reboot is required: sudo reboot")
+        elif clock == I2C_BAUDRATE_HZ:
+            parts.append(
+                "The clock is already "
+                f"{I2C_BAUDRATE_HZ} Hz. Check 3.3V on physical pin 1, "
+                "SDA on pin 3, SCL on pin 5, and GND on pin 6."
+            )
+    return " ".join(parts)
 
 
 def pop_frame(buf: bytes) -> tuple[str | None, bytes, bytes]:
@@ -203,7 +272,7 @@ class LinuxI2C:
             raise OSError(f"cannot open {self.path} ({exc})") from exc
         try:
             try:
-                fcntl.ioctl(fd, _I2C_TIMEOUT, 20)  # 200 ms
+                fcntl.ioctl(fd, _I2C_TIMEOUT, 100)  # 1 second
             except OSError:
                 log.debug("I2C_TIMEOUT is not supported on %s", self.path)
             fcntl.ioctl(fd, _I2C_SLAVE, self.address)
@@ -224,7 +293,9 @@ class LinuxI2C:
     def write(self, data: bytes) -> None:
         if self._fd is None:
             raise OSError("i2c is not open")
-        os.write(self._fd, data)
+        written = os.write(self._fd, data)
+        if written != len(data):
+            raise OSError(errno.EIO, f"short i2c write on {self.path}")
 
     def read(self, count: int) -> bytes:
         if self._fd is None:
@@ -242,13 +313,26 @@ class Pn532:
 
     def __init__(self, transport) -> None:
         self.transport = transport
+        self._last_io = 0.0
 
     def wakeup(self) -> None:
-        self.transport.write(WAKE)
+        """Poke a sleeping PN532. The first write often NACKs; that is ignored."""
+        try:
+            self._write(WAKE, attempts=2)
+        except OSError as exc:
+            log.debug("PN532 wakeup write failed: %s", exc)
 
     def transact(self, command: bytes, *, timeout: float) -> bytes:
-        """Send ``command`` and return the response payload after the TFI."""
-        self.transport.write(build_frame(command))
+        """Send ``command`` and return the response payload after the TFI.
+
+        Writes are retried when the chip NACKs. Reads that raise errno 121
+        (Pi 5) or errno 5 (earlier Pi models) mean "not ready yet", not
+        "the reader is gone".
+        """
+        self._write(build_frame(command), attempts=3)
+        # The chip needs a moment to prepare the ACK. Reading immediately
+        # is a NAK, which a Pi 5 surfaces as errno 121.
+        time.sleep(_BUS_FREE_SECONDS)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             kind, payload = self._next_frame(deadline - time.monotonic())
@@ -261,23 +345,65 @@ class Pn532:
             return payload[1:]
         raise TimeoutError("PN532 did not answer")
 
+    def _write(self, data: bytes, *, attempts: int) -> None:
+        last: OSError | None = None
+        for attempt in range(attempts):
+            self._pause_for_bus()
+            try:
+                self.transport.write(data)
+            except OSError as exc:
+                self._last_io = time.monotonic()
+                last = exc
+                if not _retryable(exc) or attempt + 1 == attempts:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+                continue
+            self._last_io = time.monotonic()
+            return
+        if last is not None:
+            raise last
+
+    def _pause_for_bus(self) -> None:
+        elapsed = time.monotonic() - self._last_io
+        if self._last_io and elapsed < _BUS_FREE_SECONDS:
+            time.sleep(_BUS_FREE_SECONDS - elapsed)
+
+    def _read(self, count: int) -> bytes:
+        """One I2C read. errno 121/5 propagates so the caller can retry it."""
+        self._pause_for_bus()
+        try:
+            return self.transport.read(count)
+        finally:
+            self._last_io = time.monotonic()
+
     def _next_frame(self, timeout: float) -> tuple[str, bytes]:
         deadline = time.monotonic() + max(0.0, timeout)
         while time.monotonic() < deadline:
-            status = self.transport.read(1)
+            try:
+                status = self._read(1)
+            except OSError as exc:
+                if not _retryable(exc):
+                    raise
+                time.sleep(0.005)
+                continue
             if status == b"\x01":
                 break
-            if not status:
-                time.sleep(0.01)
+            time.sleep(0.005)
         else:
             raise TimeoutError("PN532 did not become ready")
         buf = b""
         while time.monotonic() < deadline:
-            chunk = self.transport.read(80)
+            try:
+                chunk = self._read(80)
+            except OSError as exc:
+                if not _retryable(exc):
+                    raise
+                time.sleep(0.005)
+                continue
             if chunk.startswith(b"\x01") and not buf:
                 chunk = chunk[1:]
             if not chunk:
-                time.sleep(0.01)
+                time.sleep(0.005)
                 continue
             buf += chunk
             kind, payload, _rest = pop_frame(buf)
@@ -300,24 +426,36 @@ class Pn532Reader:
         if self._owned_transport:
             self.transport.open()
         self.chip = Pn532(self.transport)
-        try:
+        last: BaseException | None = None
+        for attempt in range(_INIT_ATTEMPTS):
             self.chip.wakeup()
-        except OSError:
-            log.debug("PN532 wakeup write failed", exc_info=True)
-        time.sleep(0.02)
-        firmware = self.chip.transact(GET_FIRMWARE, timeout=1.0)
-        if len(firmware) < 4 or firmware[0] != 0x03:
-            raise OSError(f"PN532 firmware response was {firmware.hex()}")
-        log.info(
-            "PN532 on i2c-%s address 0x%02x firmware %s.%s",
-            self.bus,
-            self.address,
-            firmware[2],
-            firmware[3],
+            time.sleep(0.02)
+            try:
+                firmware = self.chip.transact(GET_FIRMWARE, timeout=0.8)
+                if len(firmware) < 4 or firmware[0] != 0x03:
+                    raise OSError(f"PN532 firmware response was {firmware.hex()}")
+                sam = self.chip.transact(SAM_CONFIGURATION, timeout=0.8)
+                if not sam or sam[0] != 0x15:
+                    raise OSError(f"PN532 SAM configuration failed ({sam.hex() if sam else 'empty'})")
+            except (OSError, TimeoutError) as exc:
+                last = exc
+                log.info("PN532 init attempt %s failed: %s", attempt + 1, exc)
+                time.sleep(0.05)
+                continue
+            log.info(
+                "PN532 on i2c-%s address 0x%02x firmware %s.%s",
+                self.bus,
+                self.address,
+                firmware[2],
+                firmware[3],
+            )
+            return
+        detail = explain_i2c_failure(
+            last or TimeoutError("PN532 did not answer"),
+            bus=self.bus,
+            address=self.address,
         )
-        sam = self.chip.transact(SAM_CONFIGURATION, timeout=1.0)
-        if not sam or sam[0] != 0x15:
-            raise OSError(f"PN532 SAM configuration failed ({sam.hex() if sam else 'empty'})")
+        raise OSError(detail)
 
     def poll(self) -> str | None:
         if self.chip is None:
@@ -379,6 +517,8 @@ class Pn532CardSource:
                     reader = self._factory()
                     reader.open()
                 except Exception as exc:
+                    if reader is not None:
+                        self._close_reader(reader)
                     reader = None
                     if not warned:
                         log.warning(
@@ -461,19 +601,24 @@ def scan_card(bus: int, address: int, *, timeout: float = 60.0) -> int:
         reader.open()
     except Exception as exc:
         print(f"NFC reader is not available: {exc}", file=sys.stderr)
-        print("On the Pi, `i2cdetect -y 1` should show 24. See the README.", file=sys.stderr)
+        reader.close()
         return 1
     detector = CardEdgeDetector(miss_limit=2)
     deadline = time.monotonic() + timeout
+    poll_errors = 0
     try:
         while time.monotonic() < deadline:
             try:
                 uid = reader.poll()
+                poll_errors = 0
             except TimeoutError:
                 uid = None
-            except Exception as exc:
-                print(f"NFC read failed: {exc}", file=sys.stderr)
-                return 1
+            except OSError as exc:
+                poll_errors += 1
+                uid = None
+                if poll_errors >= 3:
+                    print(explain_i2c_failure(exc, bus=bus, address=address), file=sys.stderr)
+                    return 1
             presented = detector.observe(uid)
             if presented:
                 print(format_scan(presented), end="")

@@ -95,7 +95,7 @@ def test_dev_mode_avoids_an_unwritable_system_data_dir(monkeypatch):
     assert config.paths.data_dir == Path("data")
 
 
-def test_unreadable_cwd_config_falls_back_to_the_system_file(tmp_path, monkeypatch):
+def test_unreadable_cwd_config_falls_back_to_the_system_file(tmp_path, monkeypatch, capsys):
     cwd = tmp_path / "launch"
     cwd.mkdir()
     local = cwd / "config.toml"
@@ -115,7 +115,29 @@ def test_unreadable_cwd_config_falls_back_to_the_system_file(tmp_path, monkeypat
     monkeypatch.setattr(Path, "open", guarded_open)
     assert resolve_config_path(None, dev=False) == system
     assert resolve_config_path(None, dev=True) == system
+    assert "Ignoring" not in capsys.readouterr().err
     assert load_config(system, dev=False).button.pin == 17
+
+
+def test_unreadable_cwd_config_is_mentioned_when_no_fallback_exists(tmp_path, monkeypatch, capsys):
+    cwd = tmp_path / "launch"
+    cwd.mkdir()
+    local = cwd / "config.toml"
+    local.write_text("hidden\n", encoding="utf-8")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr("messagebox.config.SYSTEM_CONFIG_PATH", tmp_path / "missing.toml")
+    real_open = Path.open
+
+    def guarded_open(self, *args, **kwargs):
+        if self.resolve() == local.resolve():
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    assert resolve_config_path(None, dev=False) is None
+    err = capsys.readouterr().err
+    assert "not readable" in err
+    assert "config.toml" in err
 
 
 def test_readable_cwd_config_is_still_preferred(tmp_path, monkeypatch):
