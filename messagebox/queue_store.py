@@ -6,6 +6,11 @@ should not tear an older note or forget the order.
 
 Each item is ``<id>.json`` plus a media file. Ids are a monotonic counter,
 so oldest is always first even if the clock jumps.
+
+The inbox is still one directory. Each note remembers the chat it came
+from (``source_chat_id``). A note stays until it has been heard. After
+that, only the latest heard note for that chat is kept, so a later press
+can play it again. Older heard notes for that chat are deleted.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import json
 import os
 import shutil
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -218,3 +224,211 @@ class DiskQueue:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+
+@dataclass(frozen=True)
+class PlayChoice:
+    """What a short press should do for one chat."""
+
+    item: QueuedItem
+    replay: bool
+
+
+class Inbox:
+    """Incoming notes for every chat, stored in one :class:`DiskQueue`.
+
+    Unheard notes stay queued. Hearing one marks it and deletes any older
+    heard note for the same chat, so disk use stays at one replay per chat.
+    Notes that already have ``source_chat_id`` keep that chat. Notes saved
+    before a chat id was stored can be attributed to the default chat.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.queue = DiskQueue(root)
+
+    def __len__(self) -> int:
+        """Unheard notes across every chat. A retained replay is not waiting."""
+        return self.waiting_count()
+
+    def enqueue(self, source: Path, meta: dict[str, Any] | None = None) -> QueuedItem:
+        return self.queue.enqueue(source, _incoming_meta(meta))
+
+    def enqueue_bytes(
+        self,
+        data: bytes,
+        *,
+        suffix: str = ".ogg",
+        meta: dict[str, Any] | None = None,
+    ) -> QueuedItem:
+        return self.queue.enqueue_bytes(data, suffix=suffix, meta=_incoming_meta(meta))
+
+    def list_items(self) -> list[QueuedItem]:
+        return self.queue.list_items()
+
+    def get(self, item_id: str) -> QueuedItem | None:
+        return self.queue.get(item_id)
+
+    def remove(self, item_id: str) -> None:
+        self.queue.remove(item_id)
+
+    def waiting_count(self, chat_id: int | None = None) -> int:
+        if chat_id is None:
+            return sum(1 for item in self.queue.list_items() if not is_heard(item.meta))
+        return sum(1 for item in self._matching(chat_id) if not is_heard(item.meta))
+
+    def has_unheard(self, chat_id: int) -> bool:
+        return self.waiting_count(chat_id) > 0
+
+    def has_unheard_elsewhere(self, chat_id: int) -> bool:
+        """True when some other chat, or an unattributed note, is still unheard."""
+        try:
+            focused = int(chat_id)
+        except (TypeError, ValueError):
+            focused = 0
+        for item in self.queue.list_items():
+            if is_heard(item.meta):
+                continue
+            other = source_chat_id(item.meta)
+            if other is None or other != focused:
+                return True
+        return False
+
+    def next_play(self, chat_id: int) -> PlayChoice | None:
+        """Oldest unheard note for this chat, or its latest heard note."""
+        pending = [item for item in self._matching(chat_id) if not is_heard(item.meta)]
+        if pending:
+            return PlayChoice(item=pending[0], replay=False)
+        heard = [item for item in self._matching(chat_id) if is_heard(item.meta)]
+        if not heard:
+            return None
+        return PlayChoice(item=max(heard, key=_heard_rank), replay=True)
+
+    def mark_heard(self, item_id: str) -> None:
+        """Keep this note for replay and drop older heard notes for its chat.
+
+        ``heard_seq`` is stored on the note so the one just heard stays the
+        latest even when two marks share a timestamp, including after a restart.
+        """
+        if self.queue.get(item_id) is None:
+            return
+        seq = 0
+        for item in self.queue.list_items():
+            raw = item.meta.get("heard_seq") or 0
+            try:
+                seq = max(seq, int(raw))
+            except (TypeError, ValueError):
+                continue
+        self.queue.update(
+            item_id,
+            heard=True,
+            heard_at=time.time(),
+            heard_seq=seq + 1,
+        )
+        self.tidy_heard()
+
+    def prepare(self, default_chat_id: int | None = None) -> int:
+        """Attribute old notes that have no chat id, then bound heard notes.
+
+        Returns how many notes gained a chat id. Notes that already store
+        one are left on that chat. Nothing unheard is deleted.
+        """
+        changed = self.attribute_legacy(default_chat_id)
+        self.tidy_heard()
+        return changed
+
+    def attribute_legacy(self, default_chat_id: int | None) -> int:
+        """Give notes with no ``source_chat_id`` to the default chat.
+
+        A missing or zero id does nothing: those notes stay on disk.
+        """
+        default = _optional_chat_id(default_chat_id)
+        if default is None:
+            return 0
+        changed = 0
+        for item in self.queue.list_items():
+            if source_chat_id(item.meta) is not None:
+                continue
+            self.queue.update(item.id, source_chat_id=default)
+            changed += 1
+        return changed
+
+    def tidy_heard(self) -> None:
+        """Leave one heard note per chat: the one heard most recently."""
+        grouped: dict[int, list[QueuedItem]] = {}
+        for item in self.queue.list_items():
+            if not is_heard(item.meta):
+                continue
+            chat = source_chat_id(item.meta)
+            if chat is None:
+                continue
+            grouped.setdefault(chat, []).append(item)
+        for items in grouped.values():
+            if len(items) < 2:
+                continue
+            keep = max(items, key=_heard_rank)
+            for item in items:
+                if item.id != keep.id:
+                    self.queue.remove(item.id)
+
+    def _matching(self, chat_id: int) -> list[QueuedItem]:
+        wanted = _optional_chat_id(chat_id)
+        if wanted is None:
+            return []
+        return [item for item in self.queue.list_items() if source_chat_id(item.meta) == wanted]
+
+
+def source_chat_id(meta: dict[str, Any]) -> int | None:
+    """Chat id stored with a note, or None when the file predates one."""
+    raw = meta.get("source_chat_id")
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float) and raw.is_integer():
+        return int(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.lstrip("-").isdigit():
+            return int(text)
+    return None
+
+
+def is_heard(meta: dict[str, Any]) -> bool:
+    """True only when this process has marked the note heard.
+
+    A missing flag means the note is still waiting. That is how notes
+    saved before this behaviour are treated.
+    """
+    return meta.get("heard") is True
+
+
+def _incoming_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    stored = dict(meta or {})
+    stored.setdefault("heard", False)
+    return stored
+
+
+def _optional_chat_id(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        chat_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    if chat_id == 0:
+        return None
+    return chat_id
+
+
+def _heard_rank(item: QueuedItem) -> tuple[int, float, str]:
+    raw_seq = item.meta.get("heard_seq") or 0
+    try:
+        seq = int(raw_seq)
+    except (TypeError, ValueError):
+        seq = 0
+    raw = item.meta.get("heard_at") or 0
+    try:
+        stamp = float(raw)
+    except (TypeError, ValueError):
+        stamp = 0.0
+    return (seq, stamp, item.id)

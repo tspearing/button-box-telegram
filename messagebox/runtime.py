@@ -26,7 +26,7 @@ from messagebox.inputs.keyboard import KeyboardButtonSource
 from messagebox.inputs.pn532 import Pn532CardSource
 from messagebox.lamp import LampPatterns, open_lamp
 from messagebox.policy import should_send_to
-from messagebox.queue_store import DiskQueue
+from messagebox.queue_store import DiskQueue, Inbox
 from messagebox.recipients import RecipientDirectory, normalize_uid
 from messagebox.retry import retry_delay
 from messagebox.selection import load_selection, save_selection
@@ -53,7 +53,7 @@ class Runtime:
         self._source = None
         self._lamp = None
         self._bot = None
-        self._inbox: DiskQueue | None = None
+        self._inbox: Inbox | None = None
         self._outbox: DiskQueue | None = None
         self._coord: Coordinator | None = None
         self._directory: RecipientDirectory | None = None
@@ -135,7 +135,13 @@ class Runtime:
             # Before gpiozero/lgpio. Dev mode never opens the GPIO chip.
             prepare_lgpio_directory(data)
         (data / "tmp").mkdir(parents=True, exist_ok=True)
-        self._inbox = DiskQueue(data / "inbox")
+        self._inbox = Inbox(data / "inbox")
+        attributed = self._inbox.prepare(family_id)
+        if attributed:
+            log.info(
+                "attributed %s saved note(s) that had no chat id to the default chat",
+                attributed,
+            )
         self._outbox = DiskQueue(data / "outbox")
         self._sounds = SoundBank(data / "sounds")
         self._sounds.ensure()
@@ -157,6 +163,7 @@ class Runtime:
             machine,
             self._inbox,
             play_empty_tone=self.config.audio.play_empty_tone,
+            focused_chat=self._focused_chat_id,
         )
         patterns = LampPatterns(
             waiting=self.config.lamp.waiting,
@@ -177,7 +184,7 @@ class Runtime:
 
         log.info("Message Box %s", __version__)
         log.info("data directory: %s", data)
-        log.info("inbox: %s waiting", len(self._inbox))
+        log.info("inbox: %s unheard", len(self._inbox))
         if self.config.cards:
             log.info("%s card(s) configured", len(self.config.cards))
             for card in self.config.cards:
@@ -320,6 +327,11 @@ class Runtime:
             log.exception("NFC reader thread did not start; continuing without cards")
             self._card_source = None
 
+    def _focused_chat_id(self) -> int:
+        if self._directory is None:
+            return 0
+        return int(self._directory.current.chat_id)
+
     def _restore_selection(self) -> None:
         assert self._directory is not None and self._selection_path is not None
         saved = load_selection(self._selection_path)
@@ -405,7 +417,7 @@ class Runtime:
             elif effect.kind is EffectKind.DISCARD_RECORD:
                 self._jobs.put_nowait(_job(self.finish_capture, False, effect.recorded_for))
             elif effect.kind is EffectKind.PLAY and effect.item_id:
-                self._spawn(self.begin_playback(effect.item_id))
+                self._spawn(self.begin_playback(effect.item_id, replay=effect.replay))
             elif effect.kind is EffectKind.EMPTY:
                 self._spawn(self.play_cue("empty"))
 
@@ -521,17 +533,19 @@ class Runtime:
             },
         )
 
-    async def begin_playback(self, item_id: str) -> None:
+    async def begin_playback(self, item_id: str, *, replay: bool = False) -> None:
         assert self._inbox is not None and self._coord is not None
         item = self._inbox.get(item_id)
         if item is None or not item.path.is_file():
             log.error("queued note %s is missing; dropping it", item_id)
+            self._inbox.remove(item_id)
             async with self._coord_lock:
-                effects = self._coord.playback_finished(item_id, success=True)
+                effects = self._coord.playback_finished(item_id, success=False)
             self._dispatch(effects)
             return
         self._play_token += 1
         token = self._play_token
+        log.info("%s %s", "replaying" if replay else "playing", item.id)
         await self._play_item(item, token)
 
     async def _play_item(self, item, token: int) -> None:
@@ -563,7 +577,8 @@ class Runtime:
         if success:
             assert self._directory is not None
             self._directory.note_activity(time.monotonic())
-            log.info("played %s, %s still waiting", item.id, len(self._inbox))
+            waiting = self._inbox.waiting_count(self._directory.current.chat_id)
+            log.info("played %s, %s still waiting in this chat", item.id, waiting)
 
     def _interrupt_playback(self) -> None:
         self._play_token += 1
@@ -701,6 +716,10 @@ class Runtime:
                 save_selection(self._selection_path, chat_id=chosen.chat_id, uid=shown)
             except OSError as exc:
                 log.warning("could not save the selected card: %s", exc)
+        if self._coord is not None:
+            async with self._coord_lock:
+                effects = self._coord.focus_changed()
+            self._dispatch(effects)
         self._spawn(self._announce(chosen))
 
     async def _announce(self, recipient) -> None:

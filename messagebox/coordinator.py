@@ -2,24 +2,26 @@
 
 This is the behaviour of the box, without GPIO, audio devices, or Telegram:
 
-* a short press plays the oldest queued note, then the runtime removes it
-  after playback succeeds
+* a short press plays the oldest unheard note for the focused chat
+* when that chat has none waiting, the same press replays its latest note
+* a note is kept after it is heard; older heard notes for that chat are dropped
 * a hold records, and incoming notes that arrive during the recording stay
   queued and never start playing
-* the lamp is on (or blinking) while notes are waiting, off when the queue
-  is empty, and uses a distinct mode while recording
+* the lamp is on while the focused chat has unheard notes, blinks slowly
+  when only some other chat does, and blinks quickly while recording
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Callable, Protocol
 
 from messagebox.button_machine import Action, ActionKind, ButtonMachine
 
 LAMP_OFF = "off"
 LAMP_WAITING = "waiting"
+LAMP_ELSEWHERE = "elsewhere"
 LAMP_RECORDING = "recording"
 
 
@@ -38,14 +40,26 @@ class Effect:
     item_id: str | None = None
     lamp: str | None = None
     recorded_for: float = 0.0
+    replay: bool = False
+
+
+class _Playable(Protocol):
+    id: str
+
+
+class _Choice(Protocol):
+    item: _Playable
+    replay: bool
 
 
 class InboxView(Protocol):
-    def __len__(self) -> int: ...
+    def next_play(self, chat_id: int) -> _Choice | None: ...
 
-    def peek(self) -> object | None: ...
+    def mark_heard(self, item_id: str) -> None: ...
 
-    def remove(self, item_id: str) -> None: ...
+    def has_unheard(self, chat_id: int) -> bool: ...
+
+    def has_unheard_elsewhere(self, chat_id: int) -> bool: ...
 
 
 class Coordinator:
@@ -55,19 +69,25 @@ class Coordinator:
         inbox: InboxView,
         *,
         play_empty_tone: bool = False,
+        focused_chat: Callable[[], int] | None = None,
     ) -> None:
         self.machine = machine
         self.inbox = inbox
         self.play_empty_tone = play_empty_tone
+        self._focused_chat = focused_chat or (lambda: 0)
         self.recording = False
         self.playing_id: str | None = None
+        self._replaying = False
         self._lamp: str | None = None
 
     def lamp_mode(self) -> str:
         if self.recording:
             return LAMP_RECORDING
-        if len(self.inbox) > 0 or self.playing_id is not None:
+        chat_id = self._chat_id()
+        if self.inbox.has_unheard(chat_id):
             return LAMP_WAITING
+        if self.inbox.has_unheard_elsewhere(chat_id):
+            return LAMP_ELSEWHERE
         return LAMP_OFF
 
     def boot(self) -> list[Effect]:
@@ -88,12 +108,23 @@ class Coordinator:
         """A note arrived. Queue only: never start playback from here."""
         return self._with_lamp([])
 
+    def focus_changed(self) -> list[Effect]:
+        """The focused chat changed. Do not start playback from here."""
+        return self._with_lamp([])
+
     def playback_finished(self, item_id: str, *, success: bool) -> list[Effect]:
-        """Drop the note after it has been heard. Keep it if playback failed."""
-        if success:
-            self.inbox.remove(item_id)
-        if self.playing_id == item_id:
+        """Keep a note once it has been heard. Keep it unheard if playback failed.
+
+        A replay is already the retained note, so finishing it changes nothing
+        on disk. A newer note for this chat is then what the next press plays.
+        """
+        current = self.playing_id == item_id
+        replaying = current and self._replaying
+        if current:
             self.playing_id = None
+            self._replaying = False
+        if success and current and not replaying:
+            self.inbox.mark_heard(item_id)
         return self._with_lamp([])
 
     def _apply(self, actions: list[Action]) -> list[Effect]:
@@ -138,17 +169,28 @@ class Coordinator:
             return []
         return []
 
+    def _chat_id(self) -> int:
+        try:
+            return int(self._focused_chat())
+        except (TypeError, ValueError):
+            return 0
+
     def _short_press(self) -> list[Effect]:
         if self.recording or self.playing_id is not None:
             return []
-        item = self.inbox.peek()
-        if item is None:
+        choice = self.inbox.next_play(self._chat_id())
+        if choice is None:
+            # This chat has never had a note (or its copy is gone). The soft
+            # empty cue is the existing nothing-tone, still behind the config
+            # switch. Do not borrow a note from another chat.
             if self.play_empty_tone:
                 return [Effect(EffectKind.EMPTY)]
             return []
-        item_id = getattr(item, "id")
-        self.playing_id = str(item_id)
-        return [Effect(EffectKind.PLAY, item_id=self.playing_id)]
+        self.playing_id = str(choice.item.id)
+        self._replaying = bool(choice.replay)
+        return [
+            Effect(EffectKind.PLAY, item_id=self.playing_id, replay=self._replaying)
+        ]
 
     def _with_lamp(self, effects: list[Effect]) -> list[Effect]:
         mode = self.lamp_mode()

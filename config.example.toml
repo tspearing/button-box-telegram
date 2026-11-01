@@ -11,7 +11,7 @@ pin = 17
 pull_up = true
 # Ignore switch bounce shorter than this. gpiozero does the same on the pin.
 bounce_seconds = 0.05
-# Hold at least this long to record. Anything shorter plays the next message.
+# Hold at least this long to record. Anything shorter plays the focused chat.
 hold_seconds = 0.6
 # Audio shorter than this, after the beep, is thrown away.
 min_record_seconds = 1.0
@@ -27,8 +27,9 @@ enabled = true
 # BCM 26 is physical pin 37.
 pin = 26
 active_high = true
-# steady: the lamp stays lit while messages are waiting.
+# steady: the lamp stays lit while the focused chat has unheard notes.
 # blink: a short flash every couple of seconds instead.
+# When only a different chat has unheard notes, the lamp blinks slowly.
 waiting = "steady"
 waiting_on_seconds = 0.15
 waiting_off_seconds = 1.6
@@ -46,7 +47,8 @@ speaker_name_hints = ["LIELONGREN", "USB Audio", "USB"]
 sample_rate = 48000
 channels = 1
 opus_bitrate = "32k"
-# A short press with nothing queued: false = silence, true = a soft tone.
+# A short press when the focused chat has no notes: false = silence, true = a soft tone.
+# Notes waiting in other chats are not played.
 play_empty_tone = false
 
 [telegram]

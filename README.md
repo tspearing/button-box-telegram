@@ -2,15 +2,15 @@
 
 A screen-free voice-note box for a young child. There is one big button.
 
-- **Hold** the button until you hear a beep, talk, and let go. The box sends a Telegram voice note to the selected chat.
-- **Tap** the button to hear the oldest note waiting in the queue. It is deleted after it plays.
-- **Tap an NFC card** to choose which chat the next recording goes to. The speaker says that chat's name. The choice stays until a different card is tapped.
+- **Hold** the button until you hear a beep, talk, and let go. The box sends a Telegram voice note to the focused chat.
+- **Tap** the button to hear the oldest unheard note from the chat the box is focused on. Notes for other chats stay saved. When this chat has nothing waiting, a tap plays its latest note again, until a newer note arrives in that chat.
+- **Tap an NFC card** to focus that chat. Recordings go there, and taps play that chat's notes. The speaker says the chat's name. The choice stays until a different card is tapped.
 - Notes never play by themselves, and a new note never interrupts a recording.
-- A lamp (optional) stays on while something is waiting, blinks quickly while recording, and is off when the queue is empty.
+- A lamp (optional) stays on while the focused chat has unheard notes. It blinks slowly when only some other chat has unheard notes, blinks quickly while recording, and is off when nothing is waiting.
 
 It runs on a Raspberry Pi 5 with 64-bit Raspberry Pi OS (Bookworm, Lite is ideal) and a Telegram bot you create yourself. The idea is in the same family as [button.box](https://button.box/diy). This is separate software: it does not use WhatsApp, and it does not use the Button Box installer.
 
-Without a reader, or before any card is tapped, recordings go to the family chat. Each extra chat gets its own NTAG215 card. Tapping a card and pressing the button work at the same time: the reader is polled on its own thread and does not block recording or Telegram. See [docs/ROADMAP.md](docs/ROADMAP.md) for what is still not built.
+Without a reader, or before any card is tapped, the family chat is the focused chat. Recordings go there, and taps play that chat's notes. Each extra chat gets its own NTAG215 card. Tapping a card and pressing the button work at the same time: the reader is polled on its own thread and does not block recording or Telegram. See [docs/ROADMAP.md](docs/ROADMAP.md) for what is still not built.
 
 ## What you need
 
@@ -31,17 +31,19 @@ You can build and test all of this on the bench, with no box around it.
 
 ## How a day of use works
 
-1. Someone in the family chat sends a voice note (or an audio file) to the bot.
-2. The Pi downloads it and stores it on the SD card. The lamp comes on. Nothing plays yet.
-3. The child taps the button. The oldest note plays. It is then deleted. Tap again for the next one.
-4. The child holds the button. After about 0.6 seconds there is a short beep. That means "talk now".
-5. They let go. The recording is turned into an OGG/Opus file and sent to the selected chat. A second, higher beep means Telegram accepted it.
-6. If they let go less than about a second after the beep, the recording is thrown away and a low tone plays instead. The longest recording is 2 minutes; it sends itself at 2 minutes even if the button is still held.
-7. A tap when nothing is waiting does nothing. You can turn on a soft "nothing there" tone in the config (`play_empty_tone = true`).
+1. Someone in an allowed chat sends a voice note (or an audio file) to the bot.
+2. The Pi downloads it and stores it on the SD card. Nothing plays yet. If that chat is the one the box is focused on, the lamp comes on. If only some other chat has unheard notes, the lamp blinks slowly.
+3. Tap the button. The oldest unheard note for the focused chat plays. Tap again for the next unheard note in that chat. Notes for other chats stay saved.
+4. When that chat has no unheard notes left, a tap plays its latest note again. Another tap plays that same note, until a new note arrives in that chat. The box keeps that latest note so this still works after a restart, and deletes older heard notes for that chat.
+5. Hold the button. After about 0.6 seconds there is a short beep. That means "talk now".
+6. Let go. The recording is turned into an OGG/Opus file and sent to the focused chat. A second, higher beep means Telegram accepted it.
+7. If you let go less than about a second after the beep, the recording is thrown away and a low tone plays instead. The longest recording is 2 minutes; it sends itself at 2 minutes even if the button is still held.
+8. Tap a card to focus a different chat. The next taps play that chat's waiting notes, then its latest note. The next recording goes there too.
+9. A tap when the focused chat has never had a note does not play some other chat. Turn on a soft "nothing there" tone with `play_empty_tone = true`. Otherwise that tap is silent.
 
 If the Wi-Fi drops, recordings wait on disk and are sent when the network comes back. Notes that arrived while the Pi was offline are picked up when Telegram reconnects. Nothing is played during a recording, including a note that arrives halfway through. A card announcement waits until the recording (and any queued note that is playing) has finished. If a recording starts while the name is playing, the name stops so the record beep can play, then the name plays again afterwards.
 
-A card left on the reader does not repeat its name. Lift it and tap again to hear it, even when that chat is already selected. The last card is remembered in `/var/lib/message-box/selection.json` and restored on boot without speaking. The first boot, with nothing saved, uses `family_chat_id`.
+A card left on the reader does not repeat its name. Lift it and tap again to hear it, even when that chat is already selected. The last card is remembered in `/var/lib/message-box/selection.json` and restored on boot without speaking. Playback and recording both use that chat. The first boot, with nothing saved, uses `family_chat_id`. With no reader, that default chat is the focused chat.
 
 ## Wiring
 
@@ -114,7 +116,7 @@ When you do want the lamp, use the Pi pin to switch a transistor, and power the 
 
 Set `lamp.enabled = false` in the config if you want the pin to stay off. Default is on, pin BCM 26.
 
-While messages are waiting the lamp stays lit (`waiting = "steady"`). Change that to `"blink"` for a short flash every couple of seconds. During recording it blinks quickly either way.
+While the focused chat has unheard notes the lamp stays lit (`waiting = "steady"`). Change that to `"blink"` for a short flash every couple of seconds. During recording it blinks quickly either way. When only a different chat has unheard notes, the lamp blinks slowly (about half a second on, a couple of seconds off), so it is not the steady "this chat is waiting" light.
 
 ### The NFC reader
 
@@ -344,7 +346,7 @@ Watch the log, then hold the button for a couple of seconds after the beep and l
 journalctl -u message-box -f
 ```
 
-The selected chat should get a voice note, and you should hear the "sent" beep. Then reply with a voice note from your phone. The log should say it was queued. Tap the button (a press shorter than half a second). The note plays, and a second tap does nothing if the queue is empty. A card tap during this test does not block the button.
+The focused chat should get a voice note, and you should hear the "sent" beep. Then reply with a voice note from your phone, in that same chat. The log should say it was queued. Tap the button (a press shorter than half a second). The note plays, and a second tap plays it again. A note sent in a different allowed chat waits until that chat's card is tapped. A card tap during this test does not block the button.
 
 Leave the lamp disconnected for this test. The log will still say `lamp waiting` or `lamp recording` if GPIO is working. If opening the lamp pin fails, the box keeps running without it.
 
@@ -381,7 +383,7 @@ In the terminal:
 
 | Key | What it does |
 | --- | --- |
-| Hold SPACE | Record. Let go to stop. A quick tap of SPACE plays the next note. |
+| Hold SPACE | Record. Let go to stop. A quick tap of SPACE plays the next note for the focused chat. |
 | `s` | Short press, if holding SPACE is awkward. |
 | `r` | Press once to start a hold, press again to let go. |
 | `q` | Quit. |
@@ -404,7 +406,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The tests cover the queue (order, and that it is still there after a new process opens the same folder), the button state machine (tap versus hold, too-short recordings, the two-minute cap), the rule that an incoming note does not start playback, card selection, the PN532 frame parser, and announcements with a stand-in for espeak-ng. They do not need a Pi, a reader, or a Telegram token.
+The tests cover the queue (order, and that it is still there after a new process opens the same folder), per-chat playback and replay, the button state machine (tap versus hold, too-short recordings, the two-minute cap), the rule that an incoming note does not start playback, card selection, the PN532 frame parser, and announcements with a stand-in for espeak-ng. They do not need a Pi, a reader, or a Telegram token.
 
 ## Config reference
 
@@ -416,9 +418,9 @@ The tests cover the queue (order, and that it is still there after a new process
 | `button.min_record_seconds` | `1.0` | Audio shorter than this, after the beep, is discarded. |
 | `button.max_record_seconds` | `120` | Recording stops and sends at this length. |
 | `lamp.enabled` | `true` | Set `false` to force the lamp pin off. |
-| `lamp.waiting` | `steady` | `steady` or `blink` while notes are queued. |
+| `lamp.waiting` | `steady` | `steady` or `blink` while the focused chat has unheard notes. |
 | `audio.mic_device` / `speaker_device` | `auto` | Or an ALSA device such as `plughw:2,0`. |
-| `audio.play_empty_tone` | `false` | Soft tone when a tap finds an empty queue. |
+| `audio.play_empty_tone` | `false` | Soft tone when the focused chat has no note to play and none to replay. |
 | `telegram.allowed_chat_ids` | empty | Chats that may send, and the only chats we will send to. |
 | `nfc.i2c_bus` / `i2c_address` | `1` / `36` | PN532 bus and address. 36 is 0x24. |
 | `[[cards]]` | none | `uid`, `chat_id`, `announce`, optional `announce_file`. |
@@ -475,8 +477,8 @@ The allowlist is the whole of the access control in v1. Do not add the bot to a 
 | Path | Role |
 | --- | --- |
 | `messagebox/button_machine.py` | Tap versus hold. No GPIO. |
-| `messagebox/coordinator.py` | What a tap, a hold, and an incoming note do. |
-| `messagebox/queue_store.py` | On-disk inbox and outbox. |
+| `messagebox/coordinator.py` | What a tap, a hold, and an incoming note do. A tap plays the focused chat. |
+| `messagebox/queue_store.py` | On-disk inbox and outbox. The inbox keeps one heard note per chat. |
 | `messagebox/recipients.py` | Who we are sending to. The family chat, or the last card. |
 | `messagebox/inputs/` | GPIO button, keyboard, and the PN532 reader. |
 | `messagebox/announce.py` | espeak-ng, or a wav file, for the card name. |
