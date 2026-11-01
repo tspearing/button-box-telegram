@@ -1,6 +1,6 @@
 # Roadmap
 
-Recordings go to the family chat until a card is tapped. After that they go to the chat on that card, and they stay there until a different card is tapped, including across a reboot. Playing a queued note is unchanged: notes never start by themselves.
+Recordings go to the family chat until a card is tapped. After that they go to the chat on that card, and they stay there until a different card is tapped, including across a reboot. A tap plays that same chat: unheard notes oldest first, then the latest note again. Notes never start by themselves.
 
 ## NFC cards
 

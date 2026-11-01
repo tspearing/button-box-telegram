@@ -4,7 +4,7 @@ A terminal does not report key-up, so SPACE is interpreted with
 :class:`messagebox.keyhold.KeyHoldClassifier` (a tap versus key repeat).
 Two extra keys do not depend on repeat:
 
-* ``s`` — short press (play the next note)
+* ``s`` — short press (play the next note for the focused chat)
 * ``r`` — press once to hold, press again to release
 * ``q`` — quit
 """
@@ -28,7 +28,7 @@ log = logging.getLogger("messagebox.keyboard")
 BANNER = """
 Message Box dev mode. This terminal is the arcade button.
 
-  Hold SPACE     record (let go to stop). A quick tap plays the next note.
+  Hold SPACE     record (let go to stop). A quick tap plays the focused chat.
                  The keyboard must repeat keys. If a tap starts a recording,
                  raise dev.repeat_window_seconds above the key-repeat delay.
   s              short press, if SPACE is awkward

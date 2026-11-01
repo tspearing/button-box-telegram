@@ -7,8 +7,9 @@ keeps running.
 
 Patterns:
 
-* ``off`` — queue empty
-* ``waiting`` — notes are waiting (steady on, or a slow blink)
+* ``off`` — the focused chat has nothing waiting, and neither does any other
+* ``waiting`` — the focused chat has unheard notes (steady on, or a slow blink)
+* ``elsewhere`` — only some other chat has unheard notes (a slow blink)
 * ``recording`` — fast blink while the mic is open
 """
 
@@ -74,6 +75,11 @@ class GpioLamp:
                 off_time=self._patterns.recording_off_seconds,
                 background=True,
             )
+            return
+        if mode == "elsewhere":
+            # Mostly off, so it is not the steady "this chat is waiting" lamp
+            # and not the fast recording blink.
+            self._led.blink(on_time=0.5, off_time=2.5, background=True)
             return
         if mode == "waiting" and self._patterns.waiting == "blink":
             self._led.blink(

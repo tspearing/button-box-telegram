@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from messagebox.policy import should_accept_chat
-from messagebox.queue_store import DiskQueue
+from messagebox.queue_store import DiskQueue, Inbox
 
 log = logging.getLogger("messagebox.telegram")
 
@@ -25,7 +25,7 @@ class TelegramBridge:
         self,
         token: str,
         allowed: set[int],
-        inbox: DiskQueue,
+        inbox: DiskQueue | Inbox,
         on_queued: Callable[[], Awaitable[None]],
         download_dir: Path,
     ) -> None:
