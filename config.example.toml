@@ -27,14 +27,16 @@ enabled = true
 # BCM 26 is physical pin 37.
 pin = 26
 active_high = true
-# steady: the lamp stays lit while the focused chat has unheard notes.
-# blink: a short flash every couple of seconds instead.
-# When only a different chat has unheard notes, the lamp blinks slowly.
-waiting = "steady"
-waiting_on_seconds = 0.15
-waiting_off_seconds = 1.6
-recording_on_seconds = 0.1
-recording_off_seconds = 0.1
+# Fast blink while the focused chat has unheard notes.
+unheard_on_seconds = 0.15
+unheard_off_seconds = 0.15
+# Slow blink when only a different chat has unheard notes.
+elsewhere_on_seconds = 0.5
+elsewhere_off_seconds = 2.5
+# Recording holds the lamp steady, and only once the microphone is open.
+# Older files may still contain waiting, waiting_on_seconds,
+# waiting_off_seconds, recording_on_seconds, and recording_off_seconds.
+# Those lines are ignored.
 
 [audio]
 # "auto" picks a USB mic and a USB speaker, skipping the Pi's headphone and HDMI.

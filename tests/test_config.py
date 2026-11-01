@@ -24,6 +24,10 @@ def test_example_config_loads():
     assert config.button.pin == 17
     assert config.lamp.pin == 26
     assert config.lamp.enabled is True
+    assert config.lamp.unheard_on_seconds == 0.15
+    assert config.lamp.unheard_off_seconds == 0.15
+    assert config.lamp.elsewhere_on_seconds == 0.5
+    assert config.lamp.elsewhere_off_seconds == 2.5
     assert config.button.hold_seconds == 0.6
     assert config.button.min_record_seconds == 1.0
     assert config.button.max_record_seconds == 120
@@ -36,6 +40,58 @@ def test_example_config_loads():
     assert config.nfc.i2c_bus == 1
     assert config.nfc.i2c_address == 36
     assert config.nfc.enabled is True
+
+
+def test_old_lamp_waiting_option_still_loads(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "\n".join(
+            [
+                "[lamp]",
+                'waiting = "blink"',
+                "waiting_on_seconds = 0.2",
+                "waiting_off_seconds = 1.5",
+                "recording_on_seconds = 0.05",
+                "recording_off_seconds = 0.05",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.lamp.enabled is True
+    assert config.lamp.unheard_on_seconds == 0.15
+    assert config.lamp.unheard_off_seconds == 0.15
+    assert config.lamp.elsewhere_on_seconds == 0.5
+    assert config.lamp.elsewhere_off_seconds == 2.5
+
+
+def test_lamp_blink_timings_are_configurable(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "\n".join(
+            [
+                "[lamp]",
+                "unheard_on_seconds = 0.12",
+                "unheard_off_seconds = 0.18",
+                "elsewhere_on_seconds = 0.4",
+                "elsewhere_off_seconds = 2.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.lamp.unheard_on_seconds == 0.12
+    assert config.lamp.unheard_off_seconds == 0.18
+    assert config.lamp.elsewhere_on_seconds == 0.4
+    assert config.lamp.elsewhere_off_seconds == 2.0
+
+
+def test_lamp_blink_timings_must_be_positive(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[lamp]\nunheard_off_seconds = 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unheard_off_seconds"):
+        load_config(path)
 
 
 def test_single_allowed_chat_is_the_family():

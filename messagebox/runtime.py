@@ -166,11 +166,10 @@ class Runtime:
             focused_chat=self._focused_chat_id,
         )
         patterns = LampPatterns(
-            waiting=self.config.lamp.waiting,
-            waiting_on_seconds=self.config.lamp.waiting_on_seconds,
-            waiting_off_seconds=self.config.lamp.waiting_off_seconds,
-            recording_on_seconds=self.config.lamp.recording_on_seconds,
-            recording_off_seconds=self.config.lamp.recording_off_seconds,
+            unheard_on_seconds=self.config.lamp.unheard_on_seconds,
+            unheard_off_seconds=self.config.lamp.unheard_off_seconds,
+            elsewhere_on_seconds=self.config.lamp.elsewhere_on_seconds,
+            elsewhere_off_seconds=self.config.lamp.elsewhere_off_seconds,
         )
         self._lamp = open_lamp(
             enabled=self.config.lamp.enabled,
@@ -454,6 +453,7 @@ class Runtime:
 
     async def begin_capture(self) -> None:
         assert self._sounds is not None
+        opened = False
         async with self._capture_lock:
             if self._capturing:
                 return
@@ -463,6 +463,8 @@ class Runtime:
                 self._capture_chat_id = self._directory.current.chat_id
             self._interrupt_playback()
             async with self._speaker_lock:
+                # The lamp stays on its previous pattern through the beep.
+                # It goes steady only after the microphone is actually open.
                 await self.audio.play_and_wait(self._sounds.path("start"))
                 path = self.config.paths.data_dir / "tmp" / "live.ogg"
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -478,7 +480,10 @@ class Runtime:
                     return
                 self._capture_path = path
                 self._capturing = True
+                opened = True
                 log.info("recording")
+        if opened:
+            await self._note_mic(True)
 
     async def finish_capture(self, send: bool, duration: float) -> None:
         assert self._outbox is not None and self._directory is not None and self._sounds is not None
@@ -509,11 +514,26 @@ class Runtime:
                     log.error("recording was not usable and was not sent")
                 else:
                     log.info("recording discarded (%.1fs of audio)", duration)
+        # Drop the steady light as soon as the mic is shut, including when
+        # the button is still held after the two-minute cap. A discard that
+        # never opened the mic leaves the previous pattern alone.
+        await self._note_mic(False)
         # A discard that never opened the mic still gets a tone. A failed send
         # whose capture never started already played its error tone in begin_capture.
         if cue == "discard" or (cue == "error" and was):
             await self.play_cue(cue)
         await self.flush_deferred()
+
+    async def _note_mic(self, open_now: bool) -> None:
+        """Tell the coordinator whether the microphone is open."""
+        if self._coord is None:
+            return
+        async with self._coord_lock:
+            if open_now:
+                effects = self._coord.mic_opened()
+            else:
+                effects = self._coord.mic_closed()
+        self._dispatch(effects)
 
     def _enqueue_outgoing(self, path: Path, duration: float, chat_id: int | None = None) -> None:
         assert self._outbox is not None and self._directory is not None

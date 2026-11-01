@@ -244,13 +244,15 @@ def test_incoming_during_recording_does_not_play(tmp_path):
     coord.press(0)
     started = coord.tick(1)
     assert EffectKind.START_RECORD in _kinds(started)
-    assert coord.lamp_mode() == LAMP_RECORDING
+    # The hold has started, but the microphone is not open yet.
+    assert coord.lamp_mode() == LAMP_OFF
     item = _note(inbox, CHAT, b"from-family")
     _note(inbox, OTHER, b"other-chat")
     arrived = coord.message_enqueued()
     assert EffectKind.PLAY not in _kinds(arrived)
     assert coord.playing_id is None
     assert coord.recording
+    assert coord.lamp_mode() == LAMP_WAITING
     stopped = coord.release(3)
     assert EffectKind.STOP_RECORD in _kinds(stopped)
     assert EffectKind.PLAY not in _kinds(stopped)
@@ -259,19 +261,53 @@ def test_incoming_during_recording_does_not_play(tmp_path):
     assert played.item_id == item.id
 
 
-def test_hold_uses_the_recording_lamp_until_they_let_go_at_max(tmp_path):
+def test_lamp_stays_put_until_the_microphone_opens(tmp_path):
     coord, inbox, _focus = _box(tmp_path)
-    _note(inbox, OTHER, b"elsewhere")
-    coord.press(0)
-    coord.tick(1)
+    _note(inbox, CHAT, b"here")
+    _note(inbox, OTHER, b"there")
+    assert coord.boot()[-1].lamp == LAMP_WAITING
+
+    pressed = coord.press(0)
+    assert EffectKind.LAMP not in _kinds(pressed)
+    assert coord.lamp_mode() == LAMP_WAITING
+
+    started = coord.tick(1)
+    assert EffectKind.START_RECORD in _kinds(started)
+    assert EffectKind.LAMP not in _kinds(started)
+    assert coord.recording
+    assert coord.lamp_mode() == LAMP_WAITING
+
+    opened = coord.mic_opened()
+    assert opened[-1].lamp == LAMP_RECORDING
+    assert coord.message_enqueued() == []
+    focus_effects = coord.focus_changed()
+    assert focus_effects == []
     assert coord.lamp_mode() == LAMP_RECORDING
+
+    # The two-minute cap asks the runtime to stop the mic while the button
+    # is still down. The steady light ends when the mic actually closes.
     capped = coord.tick(6)
     assert EffectKind.STOP_RECORD in _kinds(capped)
     assert coord.recording
     assert coord.lamp_mode() == LAMP_RECORDING
+    closed = coord.mic_closed()
+    assert closed[-1].lamp == LAMP_WAITING
+    assert coord.recording
     coord.release(7)
     assert not coord.recording
-    assert coord.lamp_mode() == LAMP_ELSEWHERE
+    assert coord.lamp_mode() == LAMP_WAITING
+
+
+def test_lamp_follows_what_is_still_unheard_after_playback(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    here = _note(inbox, CHAT, b"here")
+    _note(inbox, OTHER, b"there")
+    coord.boot()
+    _tap(coord, 0)
+    assert coord.playing_id == here.id
+    assert coord.lamp_mode() == LAMP_WAITING
+    done = coord.playback_finished(here.id, success=True)
+    assert done[-1].lamp == LAMP_ELSEWHERE
 
 
 def test_threshold_release_does_not_pretend_the_mic_opened(tmp_path):
@@ -281,3 +317,5 @@ def test_threshold_release_does_not_pretend_the_mic_opened(tmp_path):
     assert EffectKind.START_RECORD not in _kinds(effects)
     assert EffectKind.DISCARD_RECORD in _kinds(effects)
     assert not coord.recording
+    assert coord.lamp_mode() == LAMP_OFF
+    assert all(effect.lamp != LAMP_RECORDING for effect in effects)
