@@ -30,7 +30,7 @@ def test_example_config_loads():
     assert config.lamp.elsewhere_off_seconds == 2.5
     assert config.button.hold_seconds == 0.6
     assert config.button.min_record_seconds == 1.0
-    assert config.button.max_record_seconds == 120
+    assert config.button.max_record_seconds == 180
     assert config.telegram.allowed_chat_ids == ()
     assert config.telegram.family_chat_id is None
     assert config.audio.play_empty_tone is False
@@ -40,6 +40,20 @@ def test_example_config_loads():
     assert config.nfc.i2c_bus == 1
     assert config.nfc.i2c_address == 36
     assert config.nfc.enabled is True
+
+
+def test_existing_max_record_seconds_is_kept(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[button]\nmax_record_seconds = 120\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.button.max_record_seconds == 120
+
+
+def test_omitted_max_record_seconds_defaults_to_three_minutes(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[button]\nhold_seconds = 0.6\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.button.max_record_seconds == 180
 
 
 def test_old_lamp_waiting_option_still_loads(tmp_path):

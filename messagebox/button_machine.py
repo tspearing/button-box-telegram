@@ -50,7 +50,7 @@ class ButtonMachine:
         *,
         hold_seconds: float = 0.6,
         min_record_seconds: float = 1.0,
-        max_record_seconds: float = 120.0,
+        max_record_seconds: float = 180.0,
         debounce_seconds: float = 0.03,
     ) -> None:
         if hold_seconds <= 0:

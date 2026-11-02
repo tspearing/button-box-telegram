@@ -15,8 +15,8 @@ bounce_seconds = 0.05
 hold_seconds = 0.6
 # Audio shorter than this, after the beep, is thrown away.
 min_record_seconds = 1.0
-# Recording stops itself at this length, even if the button is still held.
-max_record_seconds = 120
+# Recording stops itself at this length (3 minutes), even if the button is still held.
+max_record_seconds = 180
 debounce_seconds = 0.03
 
 [lamp]

@@ -284,18 +284,62 @@ def test_lamp_stays_put_until_the_microphone_opens(tmp_path):
     assert focus_effects == []
     assert coord.lamp_mode() == LAMP_RECORDING
 
-    # The two-minute cap asks the runtime to stop the mic while the button
-    # is still down. The steady light ends when the mic actually closes.
-    capped = coord.tick(6)
-    assert EffectKind.STOP_RECORD in _kinds(capped)
-    assert coord.recording
-    assert coord.lamp_mode() == LAMP_RECORDING
-    closed = coord.mic_closed()
-    assert closed[-1].lamp == LAMP_WAITING
-    assert coord.recording
-    coord.release(7)
+
+def _open_mic(coord):
+    coord.press(0)
+    started = coord.tick(1)
+    assert EffectKind.START_RECORD in _kinds(started)
+    assert coord.lamp_mode() != LAMP_RECORDING
+    opened = coord.mic_opened()
+    assert opened[-1].lamp == LAMP_RECORDING
+    return opened
+
+
+def test_release_drops_the_recording_lamp_immediately(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    _note(inbox, OTHER, b"elsewhere")
+    coord.boot()
+    _open_mic(coord)
+    # Long enough to keep the note, not long enough to hit the cap.
+    stopped = coord.release(3)
+    assert EffectKind.STOP_RECORD in _kinds(stopped)
+    assert stopped[-1].lamp == LAMP_ELSEWHERE
+    assert coord.lamp_mode() == LAMP_ELSEWHERE
+    assert not coord.mic_open
     assert not coord.recording
+
+
+def test_discard_drops_the_recording_lamp_immediately(tmp_path):
+    coord, _inbox, _focus = _box(tmp_path)
+    coord.boot()
+    _open_mic(coord)
+    discarded = coord.release(1.4)  # under a second of audio
+    assert EffectKind.DISCARD_RECORD in _kinds(discarded)
+    assert discarded[-1].lamp == LAMP_OFF
+    assert coord.lamp_mode() == LAMP_OFF
+    assert not coord.mic_open
+    assert not coord.recording
+
+
+def test_cap_drops_the_recording_lamp_while_the_button_is_held(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    _note(inbox, CHAT, b"here")
+    coord.boot()
+    _open_mic(coord)
+    capped = coord.tick(6)  # record started at t=1, cap is 5s in this test
+    assert EffectKind.STOP_RECORD in _kinds(capped)
+    assert capped[-1].lamp == LAMP_WAITING
     assert coord.lamp_mode() == LAMP_WAITING
+    assert not coord.mic_open
+    # The button is still down. The steady light must not wait for the release.
+    assert coord.recording
+    assert coord.tick(7) == []
+    assert coord.lamp_mode() == LAMP_WAITING
+    released = coord.release(8)
+    assert EffectKind.PLAY not in _kinds(released)
+    assert all(effect.lamp != LAMP_RECORDING for effect in released)
+    assert coord.lamp_mode() == LAMP_WAITING
+    assert not coord.recording
 
 
 def test_lamp_follows_what_is_still_unheard_after_playback(tmp_path):

@@ -124,8 +124,12 @@ class Coordinator:
 
     def mic_closed(self) -> list[Effect]:
         """The microphone has closed. The lamp shows whatever is still waiting."""
-        self.mic_open = False
+        self._release_mic()
         return self._with_lamp([])
+
+    def _release_mic(self) -> None:
+        """Drop the steady lamp. Safe to call if the mic was never open."""
+        self.mic_open = False
 
     def playback_finished(self, item_id: str, *, success: bool) -> list[Effect]:
         """Keep a note once it has been heard. Keep it unheard if playback failed.
@@ -170,18 +174,21 @@ class Coordinator:
             return [Effect(EffectKind.START_RECORD)]
         if action.kind is ActionKind.RECORD_STOP:
             self.recording = False
+            self._release_mic()
             return [Effect(EffectKind.STOP_RECORD, recorded_for=action.recorded_for)]
         if action.kind is ActionKind.RECORD_DISCARD:
             self.recording = False
+            self._release_mic()
             return [Effect(EffectKind.DISCARD_RECORD, recorded_for=action.recorded_for)]
         if action.kind is ActionKind.RECORD_MAX:
-            # Stop the mic now so the two-minute note can be sent while the
-            # button is still down. The lamp leaves its steady state when the
-            # runtime reports that the microphone has actually closed.
+            # The note sends now, while the button is still down. The steady
+            # lamp ends in this same step, not when they eventually let go.
             self.recording = True
+            self._release_mic()
             return [Effect(EffectKind.STOP_RECORD, recorded_for=action.recorded_for)]
         if action.kind is ActionKind.HOLD_CLEARED:
             self.recording = False
+            self._release_mic()
             return []
         return []
 

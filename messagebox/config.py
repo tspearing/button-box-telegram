@@ -29,7 +29,7 @@ class ButtonConfig:
     bounce_seconds: float = 0.05
     hold_seconds: float = 0.6
     min_record_seconds: float = 1.0
-    max_record_seconds: float = 120.0
+    max_record_seconds: float = 180.0
     debounce_seconds: float = 0.03
 
 
@@ -322,7 +322,7 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
             bounce_seconds=float(button.get("bounce_seconds", 0.05)),
             hold_seconds=float(button.get("hold_seconds", 0.6)),
             min_record_seconds=float(button.get("min_record_seconds", 1.0)),
-            max_record_seconds=float(button.get("max_record_seconds", 120)),
+            max_record_seconds=float(button.get("max_record_seconds", 180)),
             debounce_seconds=float(button.get("debounce_seconds", 0.03)),
         ),
         lamp=LampConfig(

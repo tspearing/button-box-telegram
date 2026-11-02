@@ -37,7 +37,7 @@ You can build and test all of this on the bench, with no box around it.
 4. When that chat has no unheard notes left, a tap plays its latest note again. Another tap plays that same note, until a new note arrives in that chat. The box keeps that latest note so this still works after a restart, and deletes older heard notes for that chat.
 5. Hold the button. After about 0.6 seconds there is a short beep. That means "talk now". The lamp stays as it was while the button is going down and during that beep. It comes on steady when the microphone opens, and it goes back to whatever notes are still waiting when the recording stops.
 6. Let go. The recording is turned into an OGG/Opus file and sent to the focused chat. A second, higher beep means Telegram accepted it.
-7. If you let go less than about a second after the beep, the recording is thrown away and a low tone plays instead. The longest recording is 2 minutes; it sends itself at 2 minutes even if the button is still held.
+7. If you let go less than about a second after the beep, the recording is thrown away and a low tone plays instead. The longest recording is 3 minutes (`max_record_seconds`); it sends itself at 3 minutes even if the button is still held.
 8. Tap a card to focus a different chat. The next taps play that chat's waiting notes, then its latest note. The next recording goes there too.
 9. A tap when the focused chat has never had a note does not play some other chat. Turn on a soft "nothing there" tone with `play_empty_tone = true`. Otherwise that tap is silent.
 
@@ -120,7 +120,7 @@ The lamp has four patterns:
 
 - **Fast blink** while the focused chat has unheard notes: 0.15 seconds on, 0.15 seconds off (`unheard_on_seconds` and `unheard_off_seconds`).
 - **Slow blink** when only a different chat has unheard notes: 0.5 seconds on, 2.5 seconds off (`elsewhere_on_seconds` and `elsewhere_off_seconds`).
-- **Steady on** while the microphone is open. Holding the button, and the beep before recording starts, do not change the lamp. The steady light begins when the mic opens and ends when it closes, including if the two-minute cap stops the recording while the button is still held.
+- **Steady on** while the microphone is open. Holding the button, and the beep before recording starts, do not change the lamp. The steady light begins when the mic opens. It ends the moment recording stops: the button is released, the 3-minute cap is hit (even if the button is still held), or the microphone fails. It then shows whatever notes are still waiting.
 - **Off** when nothing is waiting in any chat.
 
 Playing a note does not have its own pattern. The lamp keeps showing what is still unheard, and it updates when that note has been heard.
@@ -415,7 +415,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The tests cover the queue (order, and that it is still there after a new process opens the same folder), per-chat playback and replay, the button state machine (tap versus hold, too-short recordings, the two-minute cap), the rule that an incoming note does not start playback, card selection, the PN532 frame parser, and announcements with a stand-in for espeak-ng. They do not need a Pi, a reader, or a Telegram token.
+The tests cover the queue (order, and that it is still there after a new process opens the same folder), per-chat playback and replay, the button state machine (tap versus hold, too-short recordings, the three-minute cap), the rule that an incoming note does not start playback, card selection, the PN532 frame parser, and announcements with a stand-in for espeak-ng. They do not need a Pi, a reader, or a Telegram token.
 
 ## Config reference
 
@@ -425,7 +425,7 @@ The tests cover the queue (order, and that it is still there after a new process
 | --- | --- | --- |
 | `button.hold_seconds` | `0.6` | How long a press must last before recording starts. |
 | `button.min_record_seconds` | `1.0` | Audio shorter than this, after the beep, is discarded. |
-| `button.max_record_seconds` | `120` | Recording stops and sends at this length. |
+| `button.max_record_seconds` | `180` | Recording stops and sends at this length, even if the button is still held. |
 | `lamp.enabled` | `true` | Set `false` to force the lamp pin off. |
 | `lamp.unheard_on_seconds` / `unheard_off_seconds` | `0.15` / `0.15` | Fast blink while the focused chat has unheard notes. |
 | `lamp.elsewhere_on_seconds` / `elsewhere_off_seconds` | `0.5` / `2.5` | Slow blink when only another chat has unheard notes. |
