@@ -38,6 +38,14 @@ elsewhere_off_seconds = 1
 # waiting_off_seconds, recording_on_seconds, and recording_off_seconds.
 # Those lines are ignored.
 
+[announce]
+# piper: offline neural voice. espeak: the older voice, used automatically
+# when Piper or this file is missing.
+engine = "piper"
+piper_voice = "/opt/message-box/voices/en_US-lessac-medium.onnx"
+# 1.0 is the model's own speed. Higher is slower, lower is faster.
+piper_length_scale = 1.0
+
 [audio]
 # "auto" picks a USB mic and a USB speaker, skipping the Pi's headphone and HDMI.
 # Or set a device from `arecord -l` / `aplay -l`, for example "plughw:2,0".

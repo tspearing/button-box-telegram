@@ -34,6 +34,9 @@ def test_example_config_loads():
     assert config.telegram.allowed_chat_ids == ()
     assert config.telegram.family_chat_id is None
     assert config.audio.play_empty_tone is False
+    assert config.announce.engine == "piper"
+    assert config.announce.piper_voice == Path("/opt/message-box/voices/en_US-lessac-medium.onnx")
+    assert config.announce.piper_length_scale == 1.0
     assert config.paths.data_dir == Path("/var/lib/message-box")
     assert config.paths.env_file == Path("/etc/message-box/env")
     assert config.cards == ()
@@ -54,6 +57,22 @@ def test_omitted_max_record_seconds_defaults_to_three_minutes(tmp_path):
     path.write_text("[button]\nhold_seconds = 0.6\n", encoding="utf-8")
     config = load_config(path)
     assert config.button.max_record_seconds == 180
+
+
+def test_announce_defaults_to_piper_when_the_section_is_missing(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[lamp]\nenabled = true\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.announce.engine == "piper"
+    assert config.announce.piper_voice == Path("/opt/message-box/voices/en_US-lessac-medium.onnx")
+    assert config.announce.piper_length_scale == 1.0
+
+
+def test_announce_engine_must_be_known(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[announce]\nengine = "robot"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="announce.engine"):
+        load_config(path)
 
 
 def test_old_lamp_waiting_option_still_loads(tmp_path):

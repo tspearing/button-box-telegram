@@ -17,6 +17,7 @@ WorkingDirectory=/var/lib/message-box
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=LG_WD=/var/lib/message-box
+Environment=XDG_CACHE_HOME=/var/lib/message-box/cache
 Environment=MESSAGEBOX_CONFIG=/etc/message-box/config.toml
 # Read by systemd as root, then the process is started as `messagebox`.
 # The token never needs to be in a file the service user can read.

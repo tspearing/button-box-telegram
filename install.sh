@@ -17,6 +17,52 @@ VENV="${INSTALL_DIR}/venv"
 ENV_FILE="/etc/message-box/env"
 CONFIG_FILE="/etc/message-box/config.toml"
 DATA_DIR="/var/lib/message-box"
+VOICE_DIR="${INSTALL_DIR}/voices"
+PIPER_VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium"
+PIPER_ONNX_SHA256="5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f"
+PIPER_JSON_SHA256="efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0"
+
+install_piper_voice() {
+  # Skip a file that is already the expected bytes. A bad copy is replaced.
+  python3 - "${VOICE_DIR}" "${PIPER_VOICE_URL}" "${PIPER_ONNX_SHA256}" "${PIPER_JSON_SHA256}" <<'PY'
+import hashlib
+import pathlib
+import sys
+import urllib.request
+
+voice_dir, base, onnx_sha, json_sha = sys.argv[1:]
+directory = pathlib.Path(voice_dir)
+directory.mkdir(parents=True, exist_ok=True)
+files = {
+    "en_US-lessac-medium.onnx": onnx_sha,
+    "en_US-lessac-medium.onnx.json": json_sha,
+}
+
+def sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+for name, expected in files.items():
+    dest = directory / name
+    if dest.is_file() and sha256(dest) == expected:
+        print(f"Voice file already present: {dest}")
+        continue
+    partial = dest.with_name(name + ".partial")
+    print(f"Downloading {name}...")
+    urllib.request.urlretrieve(base + "/" + name, partial)
+    actual = sha256(partial)
+    if actual != expected:
+        partial.unlink(missing_ok=True)
+        raise SystemExit(f"{name} checksum was {actual}, expected {expected}")
+    partial.replace(dest)
+    dest.chmod(0o644)
+    print(f"Saved {dest}")
+directory.chmod(0o755)
+PY
+}
 
 echo "Installing apt packages..."
 apt-get update
@@ -88,6 +134,17 @@ python3 -m venv --system-site-packages "${VENV}"
 "${VENV}/bin/pip" install --upgrade pip
 "${VENV}/bin/pip" install "${INSTALL_DIR}"
 
+echo "Installing Piper for card names..."
+# piper-tts is the maintained package (aarch64 wheels via onnxruntime).
+# A failure here does not stop the install: names fall back to espeak-ng.
+if ! "${VENV}/bin/pip" install "piper-tts>=1.3,<2"; then
+  echo "Piper was not installed. Card names will use espeak-ng."
+else
+  if ! install_piper_voice; then
+    echo "The Piper voice was not downloaded. Card names will use espeak-ng until it is."
+  fi
+fi
+
 if ! "${VENV}/bin/python" -c "import lgpio" >/dev/null 2>&1; then
   arch="$(uname -m)"
   if [[ "${arch}" == "aarch64" || "${arch}" == "armv7l" ]]; then
@@ -140,7 +197,7 @@ if ! grep -Eq '^[[:space:]]*LG_WD=' "${ENV_FILE}"; then
   echo "Added LG_WD to ${ENV_FILE}"
 fi
 
-mkdir -p "${DATA_DIR}"
+mkdir -p "${DATA_DIR}/cache"
 chown -R messagebox:messagebox "${DATA_DIR}"
 chmod 700 "${DATA_DIR}"
 
