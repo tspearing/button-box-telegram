@@ -2,13 +2,16 @@
 
 import shutil
 import signal
+import struct
 import subprocess
 import time
+import wave
 from pathlib import Path
 
 import pytest
 
-from messagebox.audio import playback_command, record_command
+from messagebox.audio import AudioEngine, playback_command, record_command
+from messagebox.config import AudioConfig
 from messagebox.sounds import SoundBank
 
 
@@ -38,6 +41,49 @@ def test_record_command_is_ogg_opus_and_does_not_steal_stdin(tmp_path):
     assert "-nostdin" in play
     assert "alsa" in play
     assert play[-1] == "plughw:2,0"
+    assert "adelay=delays=300:all=1" in play
+    assert play.index("-af") < play.index("-f")
+    quiet = playback_command(output, "plughw:2,0", lead_in_ms=0)
+    assert not any(part.startswith("adelay=") for part in quiet)
+    longer = playback_command(output, "plughw:2,0", lead_in_ms=450)
+    assert "adelay=delays=450:all=1" in longer
+    engine = AudioEngine(
+        AudioConfig(mic_device="plughw:1,0", speaker_device="plughw:2,0", lead_in_ms=450)
+    )
+    assert "adelay=delays=450:all=1" in engine.play_cmd(output)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_lead_in_filter_adds_silence_in_one_process(tmp_path):
+    source = tmp_path / "tone.wav"
+    with wave.open(str(source), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(48000)
+        handle.writeframes(struct.pack("<h", 8000) * 4800)  # 100 ms
+    dest = tmp_path / "with-lead.wav"
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(source),
+            "-af",
+            "adelay=delays=300:all=1",
+            str(dest),
+        ],
+        check=False,
+        capture_output=True,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stderr
+    with wave.open(str(dest), "rb") as handle:
+        seconds = handle.getnframes() / handle.getframerate()
+    assert 0.35 < seconds < 0.5
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")

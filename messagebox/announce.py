@@ -58,31 +58,41 @@ def espeak_ng_synth(text: str, dest: Path) -> bool:
     return dest.is_file()
 
 
+def resample_command(source: Path, dest: Path, *, rate: int) -> list[str]:
+    """Resample without trimming the start of the clip.
+
+    ``async`` stays off, so ffmpeg does not drop or insert samples to chase
+    a timestamp. ``first_pts=0`` keeps the first sample at the start.
+    """
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        str(source),
+        "-af",
+        f"aresample=resampler=swr:osr={int(rate)}:async=0:first_pts=0",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        str(dest),
+    ]
+
+
 def resample_wav(source: Path, dest: Path, *, rate: int) -> bool:
     """Rewrite ``source`` as 16-bit mono PCM at ``rate`` Hz. Does not raise."""
     if shutil.which("ffmpeg") is None:
         log.warning("ffmpeg is not available to resample the announcement")
         return False
-    partial = dest.with_name(dest.name + ".partial")
+    # The suffix has to stay .wav or ffmpeg will not know the format.
+    partial = dest.with_name(dest.stem + ".partial.wav")
     try:
         completed = subprocess.run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-y",
-                "-i",
-                str(source),
-                "-ac",
-                "1",
-                "-ar",
-                str(rate),
-                "-c:a",
-                "pcm_s16le",
-                str(partial),
-            ],
+            resample_command(source, partial, rate=rate),
             check=False,
             capture_output=True,
             timeout=30,
