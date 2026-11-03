@@ -7,8 +7,9 @@ This is the behaviour of the box, without GPIO, audio devices, or Telegram:
 * a note is kept after it is heard; older heard notes for that chat are dropped
 * a hold records, and incoming notes that arrive during the recording stay
   queued and never start playing
-* the lamp blinks fast while the focused chat has unheard notes, blinks
-  slowly when only some other chat does, and is off when nothing is waiting
+* the lamp gives a short flash every 3 seconds while the focused chat has
+  unheard notes, blinks evenly (1 second on, 1 second off) when only some
+  other chat does, and is off when nothing is waiting
 * the lamp goes steady only while the microphone is open, not when the
   button first goes down and not during the record beep
 """

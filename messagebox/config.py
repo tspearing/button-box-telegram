@@ -38,12 +38,12 @@ class LampConfig:
     enabled: bool = True
     pin: int = 26
     active_high: bool = True
-    # Fast blink: the focused chat has unheard notes.
-    unheard_on_seconds: float = 0.15
-    unheard_off_seconds: float = 0.15
-    # Slow blink: only some other chat has unheard notes.
-    elsewhere_on_seconds: float = 0.5
-    elsewhere_off_seconds: float = 2.5
+    # Short flash every 3 seconds: the focused chat has unheard notes.
+    unheard_on_seconds: float = 0.5
+    unheard_off_seconds: float = 2.5
+    # Even blink, 1 second on and 1 second off: only some other chat has unheard notes.
+    elsewhere_on_seconds: float = 1.0
+    elsewhere_off_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -329,10 +329,10 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
             enabled=bool(lamp.get("enabled", True)),
             pin=int(lamp.get("pin", 26)),
             active_high=bool(lamp.get("active_high", True)),
-            unheard_on_seconds=float(lamp.get("unheard_on_seconds", 0.15)),
-            unheard_off_seconds=float(lamp.get("unheard_off_seconds", 0.15)),
-            elsewhere_on_seconds=float(lamp.get("elsewhere_on_seconds", 0.5)),
-            elsewhere_off_seconds=float(lamp.get("elsewhere_off_seconds", 2.5)),
+            unheard_on_seconds=float(lamp.get("unheard_on_seconds", 0.5)),
+            unheard_off_seconds=float(lamp.get("unheard_off_seconds", 2.5)),
+            elsewhere_on_seconds=float(lamp.get("elsewhere_on_seconds", 1.0)),
+            elsewhere_off_seconds=float(lamp.get("elsewhere_off_seconds", 1.0)),
         ),
         audio=AudioConfig(
             mic_device=str(audio.get("mic_device", "auto")),

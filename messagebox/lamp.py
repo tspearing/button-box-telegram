@@ -8,8 +8,8 @@ keeps running.
 Patterns:
 
 * ``off`` — nothing unheard in any chat
-* ``waiting`` — the focused chat has unheard notes (a fast blink)
-* ``elsewhere`` — only some other chat has unheard notes (a slow blink)
+* ``waiting`` — the focused chat has unheard notes (a short flash every 3 seconds)
+* ``elsewhere`` — only some other chat has unheard notes (1 second on, 1 second off)
 * ``recording`` — steady on, and only while the microphone is open
 """
 
@@ -27,17 +27,17 @@ log = logging.getLogger("messagebox.lamp")
 
 @dataclass(frozen=True)
 class LampPatterns:
-    unheard_on_seconds: float = 0.15
-    unheard_off_seconds: float = 0.15
-    elsewhere_on_seconds: float = 0.5
-    elsewhere_off_seconds: float = 2.5
+    unheard_on_seconds: float = 0.5
+    unheard_off_seconds: float = 2.5
+    elsewhere_on_seconds: float = 1.0
+    elsewhere_off_seconds: float = 1.0
 
 
 def lamp_output(mode: str, patterns: LampPatterns) -> tuple[str, float, float]:
     """How a mode drives the pin: ``off``, ``on``, or ``blink`` with timings.
 
-    Recording is a steady light. The fast and slow blinks are the two
-    "notes are waiting" patterns.
+    Recording is a steady light. This chat's notes are a short flash.
+    Another chat's notes are an even blink.
     """
     if mode == "off":
         return ("off", 0.0, 0.0)
