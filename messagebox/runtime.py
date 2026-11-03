@@ -14,7 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from messagebox import __version__
-from messagebox.announce import Announcer, espeak_ng_synth
+from messagebox.announce import Announcer, build_announcer
 from messagebox.audio import AudioEngine, ffmpeg_available
 from messagebox.button_machine import ButtonMachine
 from messagebox.cards import build_directory
@@ -146,7 +146,14 @@ class Runtime:
         self._outbox = DiskQueue(data / "outbox")
         self._sounds = SoundBank(data / "sounds")
         self._sounds.ensure()
-        self._announcer = Announcer(data / "announce-cache", espeak_ng_synth)
+        self._announcer = build_announcer(
+            data / "announce-cache",
+            engine=self.config.announce.engine,
+            piper_voice=self.config.announce.piper_voice,
+            piper_length_scale=self.config.announce.piper_length_scale,
+            sample_rate=self.config.audio.sample_rate,
+        )
+        self._warm_announcements()
         self._selection_path = data / "selection.json"
         self._directory = build_directory(
             family_id or 0,
@@ -326,6 +333,29 @@ class Runtime:
         except Exception:
             log.exception("NFC reader thread did not start; continuing without cards")
             self._card_source = None
+
+    def _warm_announcements(self) -> None:
+        """Speak each configured name once, in the background, before a tap."""
+        announcer = self._announcer
+        if announcer is None or not self.config.cards:
+            return
+        voice = self.config.announce.piper_voice
+        if self.config.announce.engine == "espeak":
+            log.info("card announcements use espeak-ng")
+        elif voice.is_file() and Path(str(voice) + ".json").is_file():
+            log.info("card announcements use Piper (%s)", voice.name)
+        else:
+            log.warning(
+                "Piper voice %s is not installed; card announcements will use espeak-ng",
+                voice,
+            )
+        phrases = [(card.announce, card.announce_file) for card in self.config.cards]
+        task = asyncio.create_task(
+            asyncio.to_thread(announcer.warm, phrases),
+            name="announce-warm",
+        )
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     def _focused_chat_id(self) -> int:
         if self._directory is None:
@@ -783,8 +813,8 @@ class Runtime:
         if self._announcer is None:
             return
         try:
-            # espeak-ng is a blocking process. Keep it off the event loop so
-            # the button, the microphone, and Telegram keep running.
+            # Synthesis blocks while the model runs. Keep it off the event
+            # loop so the button, the microphone, and Telegram keep running.
             clip = await asyncio.to_thread(
                 self._announcer.clip_for,
                 recipient.display_name,

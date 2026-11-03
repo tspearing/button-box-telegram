@@ -18,6 +18,7 @@ from messagebox.recipients import normalize_uid
 
 
 DEFAULT_DATA_DIR = Path("/var/lib/message-box")
+DEFAULT_PIPER_VOICE = Path("/opt/message-box/voices/en_US-lessac-medium.onnx")
 DEFAULT_ENV_FILE = Path("/etc/message-box/env")
 SYSTEM_CONFIG_PATH = Path("/etc/message-box/config.toml")
 
@@ -93,6 +94,15 @@ class CardConfig:
 
 
 @dataclass(frozen=True)
+class AnnounceConfig:
+    """How a tapped card says its name. Missing keys mean Piper."""
+
+    engine: str = "piper"
+    piper_voice: Path = DEFAULT_PIPER_VOICE
+    piper_length_scale: float = 1.0
+
+
+@dataclass(frozen=True)
 class DevConfig:
     repeat_window_seconds: float = 0.7
     repeat_gap_seconds: float = 0.22
@@ -107,6 +117,7 @@ class AppConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
     recipient: RecipientConfig = field(default_factory=RecipientConfig)
     nfc: NfcConfig = field(default_factory=NfcConfig)
+    announce: AnnounceConfig = field(default_factory=AnnounceConfig)
     cards: tuple[CardConfig, ...] = ()
     dev_keys: DevConfig = field(default_factory=DevConfig)
     log_level: str = "INFO"
@@ -307,6 +318,7 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
     recipient = data.get("recipient") or {}
     nfc = data.get("nfc") or {}
     dev_keys = data.get("dev") or {}
+    announce = data.get("announce") or {}
     logging_table = data.get("logging") or {}
     raw_cards = data.get("cards") or []
     family = telegram.get("family_chat_id", None)
@@ -359,6 +371,11 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
             i2c_bus=int(nfc.get("i2c_bus", 1)),
             i2c_address=int(nfc.get("i2c_address", 36)),
         ),
+        announce=AnnounceConfig(
+            engine=str(announce.get("engine", "piper")).strip().lower(),
+            piper_voice=Path(str(announce.get("piper_voice", str(DEFAULT_PIPER_VOICE)))),
+            piper_length_scale=float(announce.get("piper_length_scale", 1.0)),
+        ),
         cards=_cards(raw_cards, allowed),
         dev_keys=DevConfig(
             repeat_window_seconds=float(dev_keys.get("repeat_window_seconds", 0.7)),
@@ -399,6 +416,10 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("nfc.i2c_bus must be from 0 to 9")
     if not 0x08 <= config.nfc.i2c_address <= 0x77:
         raise ValueError("nfc.i2c_address must be a 7-bit I2C address (36 is 0x24)")
+    if config.announce.engine not in {"piper", "espeak"}:
+        raise ValueError("announce.engine must be 'piper' or 'espeak'")
+    if not 0 < config.announce.piper_length_scale <= 3:
+        raise ValueError("announce.piper_length_scale must be greater than 0 and at most 3")
     seen: set[str] = set()
     for card in config.cards:
         if card.uid in seen:

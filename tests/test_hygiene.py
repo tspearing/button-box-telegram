@@ -54,6 +54,11 @@ def test_install_and_service_match_the_pi_setup():
     assert "WorkingDirectory=/var/lib/message-box" in service
     assert "Environment=LG_WD=/var/lib/message-box" in service
     assert "LG_WD=/var/lib/message-box" in script
+    assert "piper-tts>=1.3,<2" in script
+    assert "en_US-lessac-medium.onnx" in script
+    assert "/opt/message-box/voices" in script or 'VOICE_DIR="${INSTALL_DIR}/voices"' in script
+    assert "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f" in script
+    assert "XDG_CACHE_HOME=/var/lib/message-box/cache" in service
     groups = service.split("SupplementaryGroups=", 1)[1].splitlines()[0]
     assert "i2c" in groups.split()
 
