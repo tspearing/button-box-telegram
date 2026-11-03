@@ -7,10 +7,10 @@ keeps running.
 
 Patterns:
 
-* ``off`` — the focused chat has nothing waiting, and neither does any other
-* ``waiting`` — the focused chat has unheard notes (steady on, or a slow blink)
+* ``off`` — nothing unheard in any chat
+* ``waiting`` — the focused chat has unheard notes (a fast blink)
 * ``elsewhere`` — only some other chat has unheard notes (a slow blink)
-* ``recording`` — fast blink while the mic is open
+* ``recording`` — steady on, and only while the microphone is open
 """
 
 from __future__ import annotations
@@ -27,11 +27,27 @@ log = logging.getLogger("messagebox.lamp")
 
 @dataclass(frozen=True)
 class LampPatterns:
-    waiting: str = "steady"
-    waiting_on_seconds: float = 0.15
-    waiting_off_seconds: float = 1.6
-    recording_on_seconds: float = 0.1
-    recording_off_seconds: float = 0.1
+    unheard_on_seconds: float = 0.15
+    unheard_off_seconds: float = 0.15
+    elsewhere_on_seconds: float = 0.5
+    elsewhere_off_seconds: float = 2.5
+
+
+def lamp_output(mode: str, patterns: LampPatterns) -> tuple[str, float, float]:
+    """How a mode drives the pin: ``off``, ``on``, or ``blink`` with timings.
+
+    Recording is a steady light. The fast and slow blinks are the two
+    "notes are waiting" patterns.
+    """
+    if mode == "off":
+        return ("off", 0.0, 0.0)
+    if mode == "recording":
+        return ("on", 0.0, 0.0)
+    if mode == "waiting":
+        return ("blink", patterns.unheard_on_seconds, patterns.unheard_off_seconds)
+    if mode == "elsewhere":
+        return ("blink", patterns.elsewhere_on_seconds, patterns.elsewhere_off_seconds)
+    return ("on", 0.0, 0.0)
 
 
 class NullLamp:
@@ -67,26 +83,11 @@ class GpioLamp:
             return
         self.mode = mode
         self._led.off()
-        if mode == "off":
+        kind, on_time, off_time = lamp_output(mode, self._patterns)
+        if kind == "off":
             return
-        if mode == "recording":
-            self._led.blink(
-                on_time=self._patterns.recording_on_seconds,
-                off_time=self._patterns.recording_off_seconds,
-                background=True,
-            )
-            return
-        if mode == "elsewhere":
-            # Mostly off, so it is not the steady "this chat is waiting" lamp
-            # and not the fast recording blink.
-            self._led.blink(on_time=0.5, off_time=2.5, background=True)
-            return
-        if mode == "waiting" and self._patterns.waiting == "blink":
-            self._led.blink(
-                on_time=self._patterns.waiting_on_seconds,
-                off_time=self._patterns.waiting_off_seconds,
-                background=True,
-            )
+        if kind == "blink":
+            self._led.blink(on_time=on_time, off_time=off_time, background=True)
             return
         self._led.on()
 

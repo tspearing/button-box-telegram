@@ -66,6 +66,7 @@ class Runtime:
         self._capture_path: Path | None = None
         self._capture_chat_id: int | None = None
         self._capturing = False
+        self._capture_finish_queued = False
         self._play_proc = None
         self._play_token = 0
         self._background: set[asyncio.Task] = set()
@@ -166,11 +167,10 @@ class Runtime:
             focused_chat=self._focused_chat_id,
         )
         patterns = LampPatterns(
-            waiting=self.config.lamp.waiting,
-            waiting_on_seconds=self.config.lamp.waiting_on_seconds,
-            waiting_off_seconds=self.config.lamp.waiting_off_seconds,
-            recording_on_seconds=self.config.lamp.recording_on_seconds,
-            recording_off_seconds=self.config.lamp.recording_off_seconds,
+            unheard_on_seconds=self.config.lamp.unheard_on_seconds,
+            unheard_off_seconds=self.config.lamp.unheard_off_seconds,
+            elsewhere_on_seconds=self.config.lamp.elsewhere_on_seconds,
+            elsewhere_off_seconds=self.config.lamp.elsewhere_off_seconds,
         )
         self._lamp = open_lamp(
             enabled=self.config.lamp.enabled,
@@ -402,6 +402,7 @@ class Runtime:
                 effects.extend(self._coord.tick(time.monotonic()))
                 recording = self._coord.recording
             self._dispatch(effects)
+            await self._recover_failed_capture()
             if self._was_recording and not recording:
                 self._jobs.put_nowait(self.flush_deferred)
             self._was_recording = recording
@@ -413,8 +414,10 @@ class Runtime:
             elif effect.kind is EffectKind.START_RECORD:
                 self._jobs.put_nowait(self.begin_capture)
             elif effect.kind is EffectKind.STOP_RECORD:
+                self._capture_finish_queued = True
                 self._jobs.put_nowait(_job(self.finish_capture, True, effect.recorded_for))
             elif effect.kind is EffectKind.DISCARD_RECORD:
+                self._capture_finish_queued = True
                 self._jobs.put_nowait(_job(self.finish_capture, False, effect.recorded_for))
             elif effect.kind is EffectKind.PLAY and effect.item_id:
                 self._spawn(self.begin_playback(effect.item_id, replay=effect.replay))
@@ -454,6 +457,8 @@ class Runtime:
 
     async def begin_capture(self) -> None:
         assert self._sounds is not None
+        opened = False
+        failed = False
         async with self._capture_lock:
             if self._capturing:
                 return
@@ -463,6 +468,8 @@ class Runtime:
                 self._capture_chat_id = self._directory.current.chat_id
             self._interrupt_playback()
             async with self._speaker_lock:
+                # The lamp stays on its previous pattern through the beep.
+                # It goes steady only after the microphone is actually open.
                 await self.audio.play_and_wait(self._sounds.path("start"))
                 path = self.config.paths.data_dir / "tmp" / "live.ogg"
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -475,45 +482,95 @@ class Runtime:
                 except Exception:
                     log.exception("could not start the microphone")
                     await self.audio.play_and_wait(self._sounds.path("error"))
-                    return
-                self._capture_path = path
-                self._capturing = True
-                log.info("recording")
+                    failed = True
+                else:
+                    self._capture_path = path
+                    self._capturing = True
+                    opened = True
+                    log.info("recording")
+        if failed:
+            # A mic that never opened must not leave the steady lamp on.
+            await self._note_mic(False)
+        elif opened:
+            await self._note_mic(True)
 
     async def finish_capture(self, send: bool, duration: float) -> None:
         assert self._outbox is not None and self._directory is not None and self._sounds is not None
-        async with self._capture_lock:
-            proc = self._capture_proc
-            path = self._capture_path
-            was = self._capturing
-            self._capture_proc = None
-            self._capture_path = None
-            self._capturing = False
-            ok = False
-            if was and proc is not None and path is not None:
-                ok = await self.audio.stop_recording(proc, path)
-            chat_id = self._capture_chat_id
-            self._capture_chat_id = None
-            cue: str | None
-            if send and ok and path is not None and path.is_file():
-                self._enqueue_outgoing(path, duration, chat_id)
-                path.unlink(missing_ok=True)
-                self._outbox_wake.set()
-                cue = None
-                log.info("recording stored for sending (%.1fs)", duration)
-            else:
-                if path is not None:
+        cue: str | None = None
+        was = False
+        try:
+            async with self._capture_lock:
+                proc = self._capture_proc
+                path = self._capture_path
+                was = self._capturing
+                self._capture_proc = None
+                self._capture_path = None
+                self._capturing = False
+                ok = False
+                try:
+                    if was and proc is not None and path is not None:
+                        ok = await self.audio.stop_recording(proc, path)
+                except Exception:
+                    log.exception("could not stop the microphone")
+                    ok = False
+                chat_id = self._capture_chat_id
+                self._capture_chat_id = None
+                if send and ok and path is not None and path.is_file():
+                    self._enqueue_outgoing(path, duration, chat_id)
                     path.unlink(missing_ok=True)
-                cue = "error" if send else "discard"
-                if send:
-                    log.error("recording was not usable and was not sent")
+                    self._outbox_wake.set()
+                    cue = None
+                    log.info("recording stored for sending (%.1fs)", duration)
                 else:
-                    log.info("recording discarded (%.1fs of audio)", duration)
+                    if path is not None:
+                        path.unlink(missing_ok=True)
+                    cue = "error" if send else "discard"
+                    if send:
+                        log.error("recording was not usable and was not sent")
+                    else:
+                        log.info("recording discarded (%.1fs of audio)", duration)
+        finally:
+            # The steady light ends when recording ends, including when
+            # stopping the microphone raises. A discard that never opened
+            # the mic leaves the previous pattern alone.
+            self._capture_finish_queued = False
+            await self._note_mic(False)
         # A discard that never opened the mic still gets a tone. A failed send
         # whose capture never started already played its error tone in begin_capture.
         if cue == "discard" or (cue == "error" and was):
             await self.play_cue(cue)
         await self.flush_deferred()
+
+    def _capture_failed(self) -> bool:
+        """True when ffmpeg has already exited while we still think it is recording."""
+        proc = self._capture_proc
+        return bool(self._capturing and proc is not None and proc.returncode is not None)
+
+    async def _recover_failed_capture(self) -> None:
+        """The microphone died. Drop the steady lamp without waiting for the button."""
+        if not self._capture_failed() or self._capture_finish_queued:
+            return
+        self._capture_finish_queued = True
+        if self._coord is not None:
+            async with self._coord_lock:
+                effects = self._coord.mic_closed()
+            self._dispatch(effects)
+        self._jobs.put_nowait(_job(self.finish_capture, True, 0.0))
+
+    async def _note_mic(self, open_now: bool) -> None:
+        """Tell the coordinator whether the microphone is open."""
+        if self._coord is None:
+            return
+        async with self._coord_lock:
+            # A stop that arrived during the beep must not light the lamp
+            # when the microphone finally opens a moment later.
+            if open_now and self._capture_finish_queued:
+                open_now = False
+            if open_now:
+                effects = self._coord.mic_opened()
+            else:
+                effects = self._coord.mic_closed()
+        self._dispatch(effects)
 
     def _enqueue_outgoing(self, path: Path, duration: float, chat_id: int | None = None) -> None:
         assert self._outbox is not None and self._directory is not None

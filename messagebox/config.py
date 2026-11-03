@@ -29,7 +29,7 @@ class ButtonConfig:
     bounce_seconds: float = 0.05
     hold_seconds: float = 0.6
     min_record_seconds: float = 1.0
-    max_record_seconds: float = 120.0
+    max_record_seconds: float = 180.0
     debounce_seconds: float = 0.03
 
 
@@ -38,11 +38,12 @@ class LampConfig:
     enabled: bool = True
     pin: int = 26
     active_high: bool = True
-    waiting: str = "steady"
-    waiting_on_seconds: float = 0.15
-    waiting_off_seconds: float = 1.6
-    recording_on_seconds: float = 0.1
-    recording_off_seconds: float = 0.1
+    # Fast blink: the focused chat has unheard notes.
+    unheard_on_seconds: float = 0.15
+    unheard_off_seconds: float = 0.15
+    # Slow blink: only some other chat has unheard notes.
+    elsewhere_on_seconds: float = 0.5
+    elsewhere_off_seconds: float = 2.5
 
 
 @dataclass(frozen=True)
@@ -321,18 +322,17 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
             bounce_seconds=float(button.get("bounce_seconds", 0.05)),
             hold_seconds=float(button.get("hold_seconds", 0.6)),
             min_record_seconds=float(button.get("min_record_seconds", 1.0)),
-            max_record_seconds=float(button.get("max_record_seconds", 120)),
+            max_record_seconds=float(button.get("max_record_seconds", 180)),
             debounce_seconds=float(button.get("debounce_seconds", 0.03)),
         ),
         lamp=LampConfig(
             enabled=bool(lamp.get("enabled", True)),
             pin=int(lamp.get("pin", 26)),
             active_high=bool(lamp.get("active_high", True)),
-            waiting=str(lamp.get("waiting", "steady")),
-            waiting_on_seconds=float(lamp.get("waiting_on_seconds", 0.15)),
-            waiting_off_seconds=float(lamp.get("waiting_off_seconds", 1.6)),
-            recording_on_seconds=float(lamp.get("recording_on_seconds", 0.1)),
-            recording_off_seconds=float(lamp.get("recording_off_seconds", 0.1)),
+            unheard_on_seconds=float(lamp.get("unheard_on_seconds", 0.15)),
+            unheard_off_seconds=float(lamp.get("unheard_off_seconds", 0.15)),
+            elsewhere_on_seconds=float(lamp.get("elsewhere_on_seconds", 0.5)),
+            elsewhere_off_seconds=float(lamp.get("elsewhere_off_seconds", 2.5)),
         ),
         audio=AudioConfig(
             mic_device=str(audio.get("mic_device", "auto")),
@@ -375,8 +375,14 @@ def _validate(config: AppConfig) -> None:
     for pin, name in ((config.button.pin, "button"), (config.lamp.pin, "lamp")):
         if not 0 <= pin <= 27:
             raise ValueError(f"{name} pin must be a BCM number from 0 to 27")
-    if config.lamp.waiting not in {"steady", "blink"}:
-        raise ValueError("lamp.waiting must be 'steady' or 'blink'")
+    for label, seconds in (
+        ("unheard_on_seconds", config.lamp.unheard_on_seconds),
+        ("unheard_off_seconds", config.lamp.unheard_off_seconds),
+        ("elsewhere_on_seconds", config.lamp.elsewhere_on_seconds),
+        ("elsewhere_off_seconds", config.lamp.elsewhere_off_seconds),
+    ):
+        if seconds <= 0:
+            raise ValueError(f"lamp.{label} must be positive")
     if config.audio.sample_rate < 8000:
         raise ValueError("sample_rate is too low")
     if config.audio.channels not in {1, 2}:

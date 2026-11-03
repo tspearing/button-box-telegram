@@ -1,4 +1,4 @@
-"""Hold versus short press, including discard and the two-minute cap."""
+"""Hold versus short press, including discard and the three-minute cap."""
 
 from messagebox.button_machine import ActionKind, ButtonMachine, Phase
 
@@ -22,7 +22,7 @@ def test_defaults_match_the_product():
     button = ButtonMachine()
     assert button.hold_seconds == 0.6
     assert button.min_record_seconds == 1.0
-    assert button.max_record_seconds == 120.0
+    assert button.max_record_seconds == 180.0
 
 
 def test_short_press():

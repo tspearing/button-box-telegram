@@ -7,8 +7,10 @@ This is the behaviour of the box, without GPIO, audio devices, or Telegram:
 * a note is kept after it is heard; older heard notes for that chat are dropped
 * a hold records, and incoming notes that arrive during the recording stay
   queued and never start playing
-* the lamp is on while the focused chat has unheard notes, blinks slowly
-  when only some other chat does, and blinks quickly while recording
+* the lamp blinks fast while the focused chat has unheard notes, blinks
+  slowly when only some other chat does, and is off when nothing is waiting
+* the lamp goes steady only while the microphone is open, not when the
+  button first goes down and not during the record beep
 """
 
 from __future__ import annotations
@@ -76,12 +78,15 @@ class Coordinator:
         self.play_empty_tone = play_empty_tone
         self._focused_chat = focused_chat or (lambda: 0)
         self.recording = False
+        self.mic_open = False
         self.playing_id: str | None = None
         self._replaying = False
         self._lamp: str | None = None
 
     def lamp_mode(self) -> str:
-        if self.recording:
+        # Steady only while the mic is open. Holding the button, and the
+        # beep before the mic starts, leave the previous pattern in place.
+        if self.mic_open:
             return LAMP_RECORDING
         chat_id = self._chat_id()
         if self.inbox.has_unheard(chat_id):
@@ -111,6 +116,20 @@ class Coordinator:
     def focus_changed(self) -> list[Effect]:
         """The focused chat changed. Do not start playback from here."""
         return self._with_lamp([])
+
+    def mic_opened(self) -> list[Effect]:
+        """The microphone is open. The lamp goes steady from this moment."""
+        self.mic_open = True
+        return self._with_lamp([])
+
+    def mic_closed(self) -> list[Effect]:
+        """The microphone has closed. The lamp shows whatever is still waiting."""
+        self._release_mic()
+        return self._with_lamp([])
+
+    def _release_mic(self) -> None:
+        """Drop the steady lamp. Safe to call if the mic was never open."""
+        self.mic_open = False
 
     def playback_finished(self, item_id: str, *, success: bool) -> list[Effect]:
         """Keep a note once it has been heard. Keep it unheard if playback failed.
@@ -155,17 +174,21 @@ class Coordinator:
             return [Effect(EffectKind.START_RECORD)]
         if action.kind is ActionKind.RECORD_STOP:
             self.recording = False
+            self._release_mic()
             return [Effect(EffectKind.STOP_RECORD, recorded_for=action.recorded_for)]
         if action.kind is ActionKind.RECORD_DISCARD:
             self.recording = False
+            self._release_mic()
             return [Effect(EffectKind.DISCARD_RECORD, recorded_for=action.recorded_for)]
         if action.kind is ActionKind.RECORD_MAX:
-            # Keep the recording lamp until they let go, but stop the mic now
-            # so the two-minute note can be sent while the button is still down.
+            # The note sends now, while the button is still down. The steady
+            # lamp ends in this same step, not when they eventually let go.
             self.recording = True
+            self._release_mic()
             return [Effect(EffectKind.STOP_RECORD, recorded_for=action.recorded_for)]
         if action.kind is ActionKind.HOLD_CLEARED:
             self.recording = False
+            self._release_mic()
             return []
         return []
 
