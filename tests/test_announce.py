@@ -2,11 +2,19 @@
 
 from pathlib import Path
 
+import shutil
+import struct
+import wave
+
+import pytest
+
 from messagebox.announce import (
     Announcer,
     PiperSpeaker,
     SpeechAttempt,
     build_announcer,
+    resample_command,
+    resample_wav,
 )
 
 
@@ -100,6 +108,54 @@ def test_cache_key_includes_engine_and_voice(tmp_path):
     assert calls == ["German", "German", "German"]
     assert piper.clip_for("German") == first
     assert calls == ["German", "German", "German"]
+
+
+def test_announcement_cache_key_does_not_include_playback_lead_in(tmp_path):
+    """The speaker lead-in is added when the clip plays, not stored in the cache."""
+    voice = Path("/opt/message-box/voices/en_US-lessac-medium.onnx")
+    announcer = build_announcer(
+        tmp_path / "cache",
+        engine="piper",
+        piper_voice=voice,
+        piper_length_scale=1,
+        sample_rate=48000,
+    )
+    key = announcer.attempts[0].cache_key
+    assert key.startswith("piper|")
+    assert "lead_in" not in key
+    assert not key.endswith("|300")
+
+
+def test_resample_command_does_not_trim_the_start(tmp_path):
+    command = resample_command(tmp_path / "in.wav", tmp_path / "out.wav", rate=48000)
+    text = " ".join(command)
+    assert "aresample=" in text
+    assert "async=0" in text
+    assert "first_pts=0" in text
+    assert "silenceremove" not in text
+    assert "atrim" not in text
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_resample_keeps_sound_that_starts_immediately(tmp_path):
+    source = tmp_path / "in.wav"
+    rate_in = 22050
+    loud = struct.pack("<h", 16000) * (rate_in // 100)
+    silence = struct.pack("<h", 0) * (rate_in // 10)
+    with wave.open(str(source), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate_in)
+        handle.writeframes(loud + silence)
+    dest = tmp_path / "out.wav"
+    assert resample_wav(source, dest, rate=48000)
+    with wave.open(str(dest), "rb") as handle:
+        assert handle.getframerate() == 48000
+        assert handle.getnchannels() == 1
+        raw = handle.readframes(handle.getnframes())
+    samples = struct.unpack("<" + "h" * (len(raw) // 2), raw)
+    first = samples[: 48000 // 200]  # first 5 ms
+    assert sum(abs(sample) for sample in first) / len(first) > 1000
 
 
 def test_build_announcer_defaults_to_piper_then_espeak(tmp_path):

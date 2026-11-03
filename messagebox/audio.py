@@ -59,8 +59,14 @@ def alsa_record_source(device: str, *, rate: int, channels: int) -> list[str]:
     return ["-f", "alsa", "-ac", str(channels), "-ar", str(rate), "-i", device]
 
 
-def playback_command(path: Path, device: str) -> list[str]:
-    return [
+def playback_command(path: Path, device: str, *, lead_in_ms: int = 300) -> list[str]:
+    """Play ``path`` on ``device`` in one ffmpeg process.
+
+    ``lead_in_ms`` is silence at the front of that same stream. The USB
+    speaker stays open through the silence and the clip. A second process
+    would let the device go back to sleep.
+    """
+    command = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -68,14 +74,21 @@ def playback_command(path: Path, device: str) -> list[str]:
         "-nostdin",
         "-i",
         str(path),
-        "-ac",
-        "2",
-        "-ar",
-        "48000",
-        "-f",
-        "alsa",
-        device,
     ]
+    if lead_in_ms > 0:
+        command.extend(["-af", f"adelay=delays={int(lead_in_ms)}:all=1"])
+    command.extend(
+        [
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
+            "-f",
+            "alsa",
+            device,
+        ]
+    )
+    return command
 
 
 def ffmpeg_available() -> bool:
@@ -178,7 +191,11 @@ class AudioEngine:
         )
 
     def play_cmd(self, path: Path) -> list[str]:
-        return playback_command(path, self.resolve_speaker())
+        return playback_command(
+            path,
+            self.resolve_speaker(),
+            lead_in_ms=self.config.lead_in_ms,
+        )
 
     async def start_recording(self, output: Path, *, max_seconds: float) -> asyncio.subprocess.Process:
         output.parent.mkdir(parents=True, exist_ok=True)
