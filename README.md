@@ -6,7 +6,7 @@ A screen-free voice-note box for a young child. There is one big button.
 - **Tap** the button to hear the oldest unheard note from the chat the box is focused on. Notes for other chats stay saved. When this chat has nothing waiting, a tap plays its latest note again, until a newer note arrives in that chat.
 - **Tap an NFC card** to focus that chat. Recordings go there, and taps play that chat's notes. The speaker says the chat's name. The choice stays until a different card is tapped.
 - Notes never play by themselves, and a new note never interrupts a recording.
-- A lamp (optional) blinks fast while the focused chat has unheard notes, blinks slowly when only some other chat does, and is off when nothing is waiting. It comes on steady only while a recording is actually in progress (the microphone is open), not when the button first goes down.
+- A lamp (optional) gives a short flash every 3 seconds while the focused chat has unheard notes, and blinks evenly (1 second on, 1 second off) when only some other chat does. It is off when nothing is waiting. It comes on steady only while a recording is actually in progress (the microphone is open), not when the button first goes down.
 
 It runs on a Raspberry Pi 5 with 64-bit Raspberry Pi OS (Bookworm, Lite is ideal) and a Telegram bot you create yourself. The idea is in the same family as [button.box](https://button.box/diy). This is separate software: it does not use WhatsApp, and it does not use the Button Box installer.
 
@@ -32,7 +32,7 @@ You can build and test all of this on the bench, with no box around it.
 ## How a day of use works
 
 1. Someone in an allowed chat sends a voice note (or an audio file) to the bot.
-2. The Pi downloads it and stores it on the SD card. Nothing plays yet. If that chat is the one the box is focused on, the lamp blinks fast. If only some other chat has unheard notes, the lamp blinks slowly.
+2. The Pi downloads it and stores it on the SD card. Nothing plays yet. If that chat is the one the box is focused on, the lamp gives a short flash every 3 seconds. If only some other chat has unheard notes, the lamp blinks evenly, 1 second on and 1 second off.
 3. Tap the button. The oldest unheard note for the focused chat plays. The lamp keeps showing what is still unheard, and it changes once that note has been heard. Tap again for the next unheard note in that chat. Notes for other chats stay saved.
 4. When that chat has no unheard notes left, a tap plays its latest note again. Another tap plays that same note, until a new note arrives in that chat. The box keeps that latest note so this still works after a restart, and deletes older heard notes for that chat.
 5. Hold the button. After about 0.6 seconds there is a short beep. That means "talk now". The lamp stays as it was while the button is going down and during that beep. It comes on steady when the microphone opens, and it goes back to whatever notes are still waiting when the recording stops.
@@ -118,8 +118,8 @@ Set `lamp.enabled = false` in the config if you want the pin to stay off. Defaul
 
 The lamp has four patterns:
 
-- **Fast blink** while the focused chat has unheard notes: 0.15 seconds on, 0.15 seconds off (`unheard_on_seconds` and `unheard_off_seconds`).
-- **Slow blink** when only a different chat has unheard notes: 0.5 seconds on, 2.5 seconds off (`elsewhere_on_seconds` and `elsewhere_off_seconds`).
+- **Short flash** while the focused chat has unheard notes: 0.5 seconds on, 2.5 seconds off, about every 3 seconds (`unheard_on_seconds` and `unheard_off_seconds`).
+- **Even blink** when only a different chat has unheard notes: 1 second on, 1 second off (`elsewhere_on_seconds` and `elsewhere_off_seconds`).
 - **Steady on** while the microphone is open. Holding the button, and the beep before recording starts, do not change the lamp. The steady light begins when the mic opens. It ends the moment recording stops: the button is released, the 3-minute cap is hit (even if the button is still held), or the microphone fails. It then shows whatever notes are still waiting.
 - **Off** when nothing is waiting in any chat.
 
@@ -357,7 +357,7 @@ journalctl -u message-box -f
 
 The focused chat should get a voice note, and you should hear the "sent" beep. Then reply with a voice note from your phone, in that same chat. The log should say it was queued. Tap the button (a press shorter than half a second). The note plays, and a second tap plays it again. A note sent in a different allowed chat waits until that chat's card is tapped. A card tap during this test does not block the button.
 
-Leave the lamp disconnected for this test. The log will still say `lamp waiting` (fast blink), `lamp elsewhere` (slow blink), or `lamp recording` (steady, once the microphone is open) if GPIO is working. If opening the lamp pin fails, the box keeps running without it.
+Leave the lamp disconnected for this test. The log will still say `lamp waiting` (a short flash every 3 seconds), `lamp elsewhere` (1 second on, 1 second off), or `lamp recording` (steady, once the microphone is open) if GPIO is working. If opening the lamp pin fails, the box keeps running without it.
 
 ### Useful commands
 
@@ -427,8 +427,8 @@ The tests cover the queue (order, and that it is still there after a new process
 | `button.min_record_seconds` | `1.0` | Audio shorter than this, after the beep, is discarded. |
 | `button.max_record_seconds` | `180` | Recording stops and sends at this length, even if the button is still held. |
 | `lamp.enabled` | `true` | Set `false` to force the lamp pin off. |
-| `lamp.unheard_on_seconds` / `unheard_off_seconds` | `0.15` / `0.15` | Fast blink while the focused chat has unheard notes. |
-| `lamp.elsewhere_on_seconds` / `elsewhere_off_seconds` | `0.5` / `2.5` | Slow blink when only another chat has unheard notes. |
+| `lamp.unheard_on_seconds` / `unheard_off_seconds` | `0.5` / `2.5` | Short flash every 3 seconds while the focused chat has unheard notes. |
+| `lamp.elsewhere_on_seconds` / `elsewhere_off_seconds` | `1` / `1` | Even blink, 1 second on and 1 second off, when only another chat has unheard notes. |
 | `audio.mic_device` / `speaker_device` | `auto` | Or an ALSA device such as `plughw:2,0`. |
 | `audio.play_empty_tone` | `false` | Soft tone when the focused chat has no note to play and none to replay. |
 | `telegram.allowed_chat_ids` | empty | Chats that may send, and the only chats we will send to. |

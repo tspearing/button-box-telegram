@@ -24,10 +24,10 @@ def test_example_config_loads():
     assert config.button.pin == 17
     assert config.lamp.pin == 26
     assert config.lamp.enabled is True
-    assert config.lamp.unheard_on_seconds == 0.15
-    assert config.lamp.unheard_off_seconds == 0.15
-    assert config.lamp.elsewhere_on_seconds == 0.5
-    assert config.lamp.elsewhere_off_seconds == 2.5
+    assert config.lamp.unheard_on_seconds == 0.5
+    assert config.lamp.unheard_off_seconds == 2.5
+    assert config.lamp.elsewhere_on_seconds == 1
+    assert config.lamp.elsewhere_off_seconds == 1
     assert config.button.hold_seconds == 0.6
     assert config.button.min_record_seconds == 1.0
     assert config.button.max_record_seconds == 180
@@ -74,10 +74,10 @@ def test_old_lamp_waiting_option_still_loads(tmp_path):
     )
     config = load_config(path)
     assert config.lamp.enabled is True
-    assert config.lamp.unheard_on_seconds == 0.15
-    assert config.lamp.unheard_off_seconds == 0.15
-    assert config.lamp.elsewhere_on_seconds == 0.5
-    assert config.lamp.elsewhere_off_seconds == 2.5
+    assert config.lamp.unheard_on_seconds == 0.5
+    assert config.lamp.unheard_off_seconds == 2.5
+    assert config.lamp.elsewhere_on_seconds == 1
+    assert config.lamp.elsewhere_off_seconds == 1
 
 
 def test_lamp_blink_timings_are_configurable(tmp_path):

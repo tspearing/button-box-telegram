@@ -1,4 +1,4 @@
-"""Lamp patterns: steady while recording, fast and slow blinks otherwise."""
+"""Lamp patterns: steady while recording, and the two waiting blinks."""
 
 from messagebox.lamp import LampPatterns, lamp_output
 
@@ -7,8 +7,8 @@ def test_default_patterns():
     patterns = LampPatterns()
     assert lamp_output("off", patterns) == ("off", 0.0, 0.0)
     assert lamp_output("recording", patterns) == ("on", 0.0, 0.0)
-    assert lamp_output("waiting", patterns) == ("blink", 0.15, 0.15)
-    assert lamp_output("elsewhere", patterns) == ("blink", 0.5, 2.5)
+    assert lamp_output("waiting", patterns) == ("blink", 0.5, 2.5)
+    assert lamp_output("elsewhere", patterns) == ("blink", 1.0, 1.0)
 
 
 def test_blink_timings_come_from_the_config():
