@@ -110,8 +110,8 @@ def test_cache_key_includes_engine_and_voice(tmp_path):
     assert calls == ["German", "German", "German"]
 
 
-def test_announcement_cache_key_does_not_include_playback_lead_in(tmp_path):
-    """The speaker lead-in is added when the clip plays, not stored in the cache."""
+def test_announcement_cache_key_changes_when_the_wake_head_changes(tmp_path):
+    """Old clips are not reused. The playback pause length is not in the key."""
     voice = Path("/opt/message-box/voices/en_US-lessac-medium.onnx")
     announcer = build_announcer(
         tmp_path / "cache",
@@ -122,8 +122,17 @@ def test_announcement_cache_key_does_not_include_playback_lead_in(tmp_path):
     )
     key = announcer.attempts[0].cache_key
     assert key.startswith("piper|")
-    assert "lead_in" not in key
-    assert not key.endswith("|300")
+    assert "wake=noise" in key
+    assert "lead_in_ms" not in key
+    louder = build_announcer(
+        tmp_path / "other",
+        engine="piper",
+        piper_voice=voice,
+        piper_length_scale=1,
+        sample_rate=48000,
+        lead_in_level_db=-50,
+    )
+    assert louder.attempts[0].cache_key != key
 
 
 def test_resample_command_does_not_trim_the_start(tmp_path):
@@ -168,8 +177,8 @@ def test_build_announcer_defaults_to_piper_then_espeak(tmp_path):
         sample_rate=48000,
     )
     assert announcer.attempts[0].cache_key.startswith(f"piper|{voice}|")
-    assert announcer.attempts[0].cache_key.endswith("|1.000")
-    assert announcer.attempts[1].cache_key == "espeak-ng"
+    assert "|1.000|wake=noise|" in announcer.attempts[0].cache_key
+    assert announcer.attempts[1].cache_key.startswith("espeak-ng|wake=noise|")
     slower = build_announcer(
         tmp_path / "cache",
         engine="piper",
@@ -185,7 +194,28 @@ def test_build_announcer_defaults_to_piper_then_espeak(tmp_path):
         piper_length_scale=1,
         sample_rate=48000,
     )
-    assert [item.cache_key for item in espeak.attempts] == ["espeak-ng"]
+    assert espeak.attempts[0].cache_key.startswith("espeak-ng|wake=")
+
+
+def test_wake_head_is_nonzero_and_keeps_the_rest_of_the_clip(tmp_path):
+    from messagebox.announce import prepend_wake
+
+    path = tmp_path / "clip.wav"
+    body = struct.pack("<h", 14000) * 100
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(48000)
+        handle.writeframes(body)
+    prepend_wake(path, ms=60, mode="noise", level_db=-60)
+    with wave.open(str(path), "rb") as handle:
+        raw = handle.readframes(handle.getnframes())
+    samples = struct.unpack("<" + "h" * (len(raw) // 2), raw)
+    head = samples[: 48000 * 60 // 1000]
+    tail = samples[-100:]
+    assert max(abs(sample) for sample in head) > 0
+    assert max(abs(sample) for sample in head) < 80
+    assert tail == (14000,) * 100
 
 
 def test_missing_piper_voice_does_not_raise(tmp_path):

@@ -57,11 +57,13 @@ speaker_name_hints = ["LIELONGREN", "USB Audio", "USB"]
 sample_rate = 48000
 channels = 1
 opus_bitrate = "32k"
-# Silence at the start of every sound, in the same playback, so a USB
-# speaker can wake up before the first syllable. Milliseconds. 0 turns it off.
-# Raise it if the start of a name is still cut off. Lower it if the pause
-# before the sound is too long.
+# Nudge before every sound, in the same playback. Milliseconds. 0 turns it off.
+# noise: very quiet, not digital zero, so a speaker that sleeps until it
+# hears a signal can wake up. silence: digital zero, which often does not.
 lead_in_ms = 300
+lead_in_mode = "noise"
+# Loudness of the noise nudge. -60 is 0.001 of full scale.
+lead_in_level_db = -60
 # A short press when the focused chat has no notes: false = silence, true = a soft tone.
 # Notes waiting in other chats are not played.
 play_empty_tone = false
