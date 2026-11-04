@@ -19,35 +19,13 @@ import logging
 import threading
 from pathlib import Path
 
-from messagebox.announce import MAX_ANNOUNCE_CHARS, clean_announce_text
+from messagebox.announce import speakable_title
 from messagebox.config import CardConfig
 
 log = logging.getLogger("messagebox.chat_titles")
 
 SPOKEN_FALLBACK = "Chat"
 TITLE_REFRESH_SECONDS = 6 * 60 * 60
-
-
-def speakable_title(raw: str) -> str:
-    """A short phrase Piper or espeak-ng can say.
-
-    Emoji and other symbols are dropped. ``&`` becomes "and". The result
-    is trimmed to the same length limit as a configured announce line.
-    """
-    if not raw:
-        return ""
-    pieces: list[str] = []
-    for char in str(raw):
-        if char == "&":
-            pieces.append(" and ")
-        elif char.isalpha() or char.isdigit() or char in " '-":
-            pieces.append(char)
-        else:
-            pieces.append(" ")
-    spoken = clean_announce_text("".join(pieces))
-    if len(spoken) > MAX_ANNOUNCE_CHARS:
-        spoken = spoken[:MAX_ANNOUNCE_CHARS].rstrip()
-    return spoken
 
 
 class ChatTitles:

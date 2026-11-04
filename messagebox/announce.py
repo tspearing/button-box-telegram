@@ -32,6 +32,28 @@ def clean_announce_text(text: str) -> str:
     return " ".join(cleaned.split())
 
 
+def speakable_title(raw: str) -> str:
+    """A short phrase Piper or espeak-ng can say.
+
+    Emoji and other symbols are dropped. ``&`` becomes "and". The result
+    is trimmed to the same length limit as a configured announce line.
+    """
+    if not raw:
+        return ""
+    pieces: list[str] = []
+    for char in str(raw):
+        if char == "&":
+            pieces.append(" and ")
+        elif char.isalpha() or char.isdigit() or char in " '-":
+            pieces.append(char)
+        else:
+            pieces.append(" ")
+    spoken = clean_announce_text("".join(pieces))
+    if len(spoken) > MAX_ANNOUNCE_CHARS:
+        spoken = spoken[:MAX_ANNOUNCE_CHARS].rstrip()
+    return spoken
+
+
 def espeak_ng_command(text: str, dest: Path) -> list[str]:
     """argv for espeak-ng. The phrase is after ``--`` so it cannot be a flag."""
     return ["espeak-ng", "-w", str(dest), "-s", "132", "-v", "en", "--", text]

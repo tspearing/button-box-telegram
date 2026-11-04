@@ -45,6 +45,17 @@ engine = "piper"
 piper_voice = "/opt/message-box/voices/en_US-lessac-medium.onnx"
 # 1.0 is the model's own speed. Higher is slower, lower is faster.
 piper_length_scale = 1.0
+# Say who a received note is from, and say "Sent" after Telegram accepts a recording.
+announce_sender = true
+confirm_sent = true
+sent_text = "Sent"
+not_sent_text = "Not sent"
+
+# Optional shorter words for people. The key is their Telegram user id.
+# [senders]
+# 123456789 = "Mom"
+# 234567890 = "Dad"
+# 345678901 = "Grandma"
 
 [audio]
 # "auto" picks a USB mic and a USB speaker, skipping the Pi's headphone and HDMI.

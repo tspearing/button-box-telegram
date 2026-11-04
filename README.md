@@ -33,10 +33,10 @@ You can build and test all of this on the bench, with no box around it.
 
 1. Someone in an allowed chat sends a voice note (or an audio file) to the bot.
 2. The Pi downloads it and stores it on the SD card. Nothing plays yet. If that chat is the one the box is focused on, the lamp gives a short flash every 3 seconds. If only some other chat has unheard notes, the lamp blinks evenly, 1 second on and 1 second off.
-3. Tap the button. The oldest unheard note for the focused chat plays. The lamp keeps showing what is still unheard, and it changes once that note has been heard. Tap again for the next unheard note in that chat. Notes for other chats stay saved.
+3. Tap the button. The oldest unheard note for the focused chat plays. Before the note, the box says "Message from" and the sender's name. The lamp keeps showing what is still unheard, and it changes once that note has been heard. Tap again for the next unheard note in that chat. Notes for other chats stay saved.
 4. When that chat has no unheard notes left, a tap plays its latest note again. Another tap plays that same note, until a new note arrives in that chat. The box keeps that latest note so this still works after a restart, and deletes older heard notes for that chat.
 5. Hold the button. After about 0.6 seconds there is a short beep. That means "talk now". The lamp stays as it was while the button is going down and during that beep. It comes on steady when the microphone opens, and it goes back to whatever notes are still waiting when the recording stops.
-6. Let go. The recording is turned into an OGG/Opus file and sent to the focused chat. A second, higher beep means Telegram accepted it.
+6. Let go. The recording is turned into an OGG/Opus file and sent to the focused chat. After Telegram accepts it, the box says "Sent". If that spoken line is turned off, a higher beep plays instead.
 7. If you let go less than about a second after the beep, the recording is thrown away and a low tone plays instead. The longest recording is 3 minutes (`max_record_seconds`); it sends itself at 3 minutes even if the button is still held.
 8. Tap a card to focus a different chat. The next taps play that chat's waiting notes, then its latest note. The next recording goes there too.
 9. A tap when the focused chat has never had a note does not play some other chat. Turn on a soft "nothing there" tone with `play_empty_tone = true`. Otherwise that tap is silent.
@@ -358,7 +358,7 @@ Watch the log, then hold the button for a couple of seconds after the beep and l
 journalctl -u message-box -f
 ```
 
-The focused chat should get a voice note, and you should hear the "sent" beep. Then reply with a voice note from your phone, in that same chat. The log should say it was queued. Tap the button (a press shorter than half a second). The note plays, and a second tap plays it again. A note sent in a different allowed chat waits until that chat's card is tapped. A card tap during this test does not block the button.
+The focused chat should get a voice note, and the box says "Sent". Then reply with a voice note from your phone, in that same chat. The log should say it was queued. Tap the button (a press shorter than half a second). The box says "Message from" and the sender's name, then the note plays. A second tap plays that introduction and the note again. A note sent in a different allowed chat waits until that chat's card is tapped. A card tap during this test does not block the button.
 
 Leave the lamp disconnected for this test. The log will still say `lamp waiting` (a short flash every 3 seconds), `lamp elsewhere` (1 second on, 1 second off), or `lamp recording` (steady, once the microphone is open) if GPIO is working. If opening the lamp pin fails, the box keeps running without it.
 
@@ -372,7 +372,7 @@ journalctl -u message-box -n 100 --no-pager
 
 Logs go to the journal because the service's stdout and stderr are what systemd records. There is no separate log file.
 
-After a `git pull` on the Pi, run `sudo bash install.sh` again. It copies the new code into `/opt/message-box` and restarts the service if a token is set.
+After a `git pull` on the Pi, run `sudo bash install.sh` again. It copies the new code into `/opt/message-box` and restarts the service if a token is set. It does not replace an existing `/etc/message-box/config.toml`. New options such as `announce_sender` and `confirm_sent` default to on when those lines are absent, so an older file keeps working.
 
 ## Dev mode on a laptop
 
@@ -418,7 +418,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The tests cover the queue (order, and that it is still there after a new process opens the same folder), per-chat playback and replay, the button state machine (tap versus hold, too-short recordings, the three-minute cap), the rule that an incoming note does not start playback, card selection, the PN532 frame parser, and announcements with a stand-in for Piper and for espeak-ng. They do not need a Pi, a reader, a voice model, or a Telegram token.
+The tests cover the queue (order, and that it is still there after a new process opens the same folder), per-chat playback and replay, the button state machine (tap versus hold, too-short recordings, the three-minute cap), the rule that an incoming note does not start playback, card selection, the PN532 frame parser, announcements with a stand-in for Piper and for espeak-ng, the "Message from" introduction, and the spoken "Sent" confirmation. They do not need a Pi, a reader, a voice model, or a Telegram token.
 
 ## Config reference
 
@@ -442,7 +442,12 @@ The tests cover the queue (order, and that it is still there after a new process
 | `announce.engine` | `piper` | `piper` or `espeak`. Missing Piper falls back to espeak-ng. |
 | `announce.piper_voice` | `/opt/message-box/voices/en_US-lessac-medium.onnx` | Piper model. The `.onnx.json` must sit beside it. |
 | `announce.piper_length_scale` | `1.0` | Speech speed. Higher is slower. |
+| `announce.announce_sender` | `true` | Say "Message from <name>" before a received note. |
+| `announce.confirm_sent` | `true` | Say `sent_text` after Telegram accepts a recording. Off uses the old beep. |
+| `announce.sent_text` | `Sent` | Spoken after a successful send. |
+| `announce.not_sent_text` | `Not sent` | Spoken once when a send fails. Empty keeps the failure quiet. |
 | `[[cards]]` | none | `uid` and `chat_id`. Optional `announce` (shorter word) and `announce_file`. |
+| `[senders]` | none | Optional `user id = "Mom"` so a person is introduced by a chosen word. |
 | `recipient.idle_timeout_seconds` | `120` | Ignored. The selected card does not time out. |
 
 Sounds (the beep, the sent chime, the too-short tone) are generated by the program as tiny WAV files. They are not recorded from anywhere else.

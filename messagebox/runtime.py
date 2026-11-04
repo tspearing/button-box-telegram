@@ -21,6 +21,7 @@ from messagebox.chat_titles import (
     announcement_for,
     fetch_chat_title,
 )
+from messagebox.cues import sender_intro, startup_cues
 from messagebox.audio import AudioEngine, ffmpeg_available
 from messagebox.button_machine import ButtonMachine
 from messagebox.cards import build_directory
@@ -232,6 +233,7 @@ class Runtime:
             on_queued=self._on_incoming,
             download_dir=data / "tmp",
             on_title=self._on_chat_title,
+            on_incoming_meta=self._on_incoming_meta,
         )
         application = bridge.build()
         self._loop = asyncio.get_running_loop()
@@ -350,7 +352,14 @@ class Runtime:
     def _warm_announcements(self) -> None:
         """Speak each configured name once, in the background, before a tap."""
         announcer = self._announcer
-        if announcer is None or not self.config.cards:
+        if announcer is None:
+            return
+        if not self.config.cards and not startup_cues(
+            confirm_sent=self.config.announce.confirm_sent,
+            sent_text=self.config.announce.sent_text,
+            not_sent_text=self.config.announce.not_sent_text,
+            announce_sender=self.config.announce.announce_sender,
+        ):
             return
         voice = self.config.announce.piper_voice
         if self.config.announce.engine == "espeak":
@@ -363,6 +372,23 @@ class Runtime:
                 voice,
             )
         phrases = [self._phrase_for_card(card) for card in self.config.cards]
+        speech = self.config.announce
+        seen = {text for text, _override in phrases if text}
+        for line in startup_cues(
+            confirm_sent=speech.confirm_sent,
+            sent_text=speech.sent_text,
+            not_sent_text=speech.not_sent_text,
+            announce_sender=speech.announce_sender,
+        ):
+            if line not in seen:
+                seen.add(line)
+                phrases.append((line, None))
+        if speech.announce_sender and self._inbox is not None:
+            for item in self._inbox.queue.list_items():
+                intro = sender_intro(item.meta, enabled=True, overrides=self.config.senders)
+                if intro and intro not in seen:
+                    seen.add(intro)
+                    phrases.append((intro, None))
         task = asyncio.create_task(
             asyncio.to_thread(announcer.warm, phrases),
             name="announce-warm",
@@ -648,22 +674,57 @@ class Runtime:
         log.info("%s %s", "replaying" if replay else "playing", item.id)
         await self._play_item(item, token)
 
+    async def _on_incoming_meta(self, meta: dict) -> None:
+        """Cache "Message from <name>" when a note arrives, without blocking the lamp."""
+        phrase = sender_intro(
+            meta,
+            enabled=self.config.announce.announce_sender,
+            overrides=self.config.senders,
+        )
+        if phrase and self._announcer is not None:
+            task = asyncio.create_task(
+                asyncio.to_thread(self._announcer.clip_for, phrase, None),
+                name="announce-sender",
+            )
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+
     async def _play_item(self, item, token: int) -> None:
         assert self._coord is not None and self._inbox is not None
         success = False
+        intro = sender_intro(
+            item.meta,
+            enabled=self.config.announce.announce_sender,
+            overrides=self.config.senders,
+        )
+        intro_clip = None
+        if intro and self._announcer is not None and token == self._play_token:
+            try:
+                intro_clip = await asyncio.to_thread(self._announcer.clip_for, intro, None)
+            except Exception:
+                log.exception("could not prepare the sender introduction")
         try:
             async with self._speaker_lock:
                 if token != self._play_token:
                     success = False
                 else:
-                    proc = await self.audio.play(item.path)
-                    self._play_proc = proc
-                    code = await proc.wait()
-                    if self._play_proc is proc:
-                        self._play_proc = None
-                    success = code == 0 and token == self._play_token
-                    if not success and token == self._play_token:
-                        log.error("playback of %s failed (ffmpeg %s)", item.id, code)
+                    if intro_clip is not None and token == self._play_token:
+                        intro_proc = await self.audio.play(intro_clip)
+                        self._play_proc = intro_proc
+                        await intro_proc.wait()
+                        if self._play_proc is intro_proc:
+                            self._play_proc = None
+                    if token != self._play_token:
+                        success = False
+                    else:
+                        proc = await self.audio.play(item.path)
+                        self._play_proc = proc
+                        code = await proc.wait()
+                        if self._play_proc is proc:
+                            self._play_proc = None
+                        success = code == 0 and token == self._play_token
+                        if not success and token == self._play_token:
+                            log.error("playback of %s failed (ffmpeg %s)", item.id, code)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -686,6 +747,45 @@ class Runtime:
         if proc is not None and proc.returncode is None:
             proc.terminate()
 
+    async def _after_send(self, ok: bool) -> None:
+        """Speak after a send, or keep the old chime when speech is turned off."""
+        speech = self.config.announce
+        if speech.confirm_sent:
+            text = speech.sent_text if ok else speech.not_sent_text
+            if text:
+                await self.play_spoken(text)
+                return
+            if ok:
+                await self.play_cue("sent")
+            return
+        if ok:
+            await self.play_cue("sent")
+
+    async def play_spoken(self, text: str) -> None:
+        assert self._coord is not None
+        if not text or self._announcer is None:
+            return
+        if self._coord.recording or self._capturing:
+            self._deferred.append(f"spoken:{text}")
+            return
+        await self._play_spoken_now(text)
+
+    async def _play_spoken_now(self, text: str) -> None:
+        if self._announcer is None:
+            return
+        try:
+            clip = await asyncio.to_thread(self._announcer.clip_for, text, None)
+        except Exception:
+            log.exception("could not prepare spoken cue")
+            return
+        if clip is None:
+            return
+        async with self._speaker_lock:
+            if self._capturing:
+                self._deferred.append(f"spoken:{text}")
+                return
+            await self.audio.play_and_wait(clip)
+
     async def play_cue(self, name: str) -> None:
         assert self._coord is not None
         if name == "sent" and (self._coord.recording or self._capturing):
@@ -706,7 +806,10 @@ class Runtime:
         assert self._coord is not None
         while self._deferred and not self._coord.recording and not self._capturing:
             name = self._deferred.pop(0)
-            await self._play_cue_now(name)
+            if name.startswith("spoken:"):
+                await self._play_spoken_now(name.removeprefix("spoken:"))
+            else:
+                await self._play_cue_now(name)
 
     async def _on_incoming(self) -> None:
         assert self._coord is not None
@@ -765,11 +868,13 @@ class Runtime:
                     type(exc).__name__,
                     int(delay),
                 )
+                if attempts == 1:
+                    self._spawn(self._after_send(False))
             else:
                 self._outbox.remove(item.id)
                 log.info("sent %s to chat %s", item.id, target)
                 self._directory.note_activity(time.monotonic())
-                self._spawn(self.play_cue("sent"))
+                self._spawn(self._after_send(True))
 
     async def _send(self, chat_id: int, item) -> None:
         bot = self._bot
