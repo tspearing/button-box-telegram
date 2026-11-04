@@ -354,6 +354,99 @@ def test_lamp_follows_what_is_still_unheard_after_playback(tmp_path):
     assert done[-1].lamp == LAMP_ELSEWHERE
 
 
+def test_a_single_tap_during_playback_does_not_rewind_or_skip(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    _note(inbox, CHAT, b"note")
+    started = _tap(coord, 0)
+    assert EffectKind.PLAY in _kinds(started)
+    assert EffectKind.REWIND not in _kinds(started)
+    lone = _tap(coord, 1.0)
+    assert EffectKind.PLAY not in _kinds(lone)
+    assert EffectKind.REWIND not in _kinds(lone)
+    assert coord.playing_id is not None
+
+
+def test_double_tap_during_playback_rewinds_on_the_second_release(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    note = _note(inbox, CHAT, b"note")
+    # The tap that starts playback is not half of a double-tap.
+    coord.press(0.0)
+    started = coord.release(0.2)
+    assert EffectKind.PLAY in _kinds(started)
+    assert started[0].item_id == note.id
+    # A following tap inside the window only arms. It does not rewind.
+    coord.press(0.3)
+    armed = coord.release(0.5)
+    assert EffectKind.REWIND not in _kinds(armed)
+    assert EffectKind.PLAY not in _kinds(armed)
+    # The second tap while playing rewinds immediately, on this release.
+    coord.press(0.6)
+    rewound = coord.release(0.8)
+    assert EffectKind.REWIND in _kinds(rewound)
+    assert EffectKind.PLAY not in _kinds(rewound)
+    assert rewound[0].item_id == note.id
+    assert coord.playing_id == note.id
+
+
+def test_a_slow_second_tap_during_playback_does_not_rewind(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    _note(inbox, CHAT, b"note")
+    _tap(coord, 0)
+    _tap(coord, 1.0)  # release at 1.2, arms
+    late = _tap(coord, 2.0)  # release at 2.2, 1.0s later
+    assert EffectKind.REWIND not in _kinds(late)
+    assert EffectKind.PLAY not in _kinds(late)
+
+
+def test_an_idle_tap_plays_on_release_without_waiting_for_the_window(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    item = _note(inbox, CHAT, b"note")
+    coord.press(0.0)
+    effects = coord.release(0.2)
+    assert EffectKind.PLAY in _kinds(effects)
+    assert effects[0].item_id == item.id
+    # The window is not a timer. Nothing further is scheduled.
+    assert coord.tick(0.2 + 0.375) == []
+    assert coord.playing_id == item.id
+
+
+def test_after_playback_a_tap_plays_the_next_note_even_inside_the_window(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    first = _note(inbox, CHAT, b"first")
+    second = _note(inbox, CHAT, b"second")
+    _tap(coord, 0)
+    _tap(coord, 1.0)  # arms at release 1.2
+    coord.playback_finished(first.id, success=True)
+    coord.press(1.3)
+    effects = coord.release(1.45)  # 0.25s after the armed tap
+    assert EffectKind.PLAY in _kinds(effects)
+    assert EffectKind.REWIND not in _kinds(effects)
+    assert effects[0].item_id == second.id
+
+
+def test_a_hold_during_playback_still_records_and_does_not_rewind(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    _note(inbox, CHAT, b"note")
+    _tap(coord, 0)
+    _tap(coord, 1.0)  # a single tap, armed
+    coord.press(2.0)
+    started = coord.tick(3.0)
+    assert EffectKind.START_RECORD in _kinds(started)
+    assert EffectKind.REWIND not in _kinds(started)
+    assert coord.recording
+
+
+def test_rewind_can_be_switched_off(tmp_path):
+    coord, inbox, _focus = _box(tmp_path)
+    coord.rewind_enabled = False
+    _note(inbox, CHAT, b"note")
+    _tap(coord, 0)
+    _tap(coord, 1.0)
+    second = _tap(coord, 1.2)
+    assert EffectKind.REWIND not in _kinds(second)
+    assert EffectKind.PLAY not in _kinds(second)
+
+
 def test_threshold_release_does_not_pretend_the_mic_opened(tmp_path):
     coord, _inbox, _focus = _box(tmp_path)
     coord.press(0)

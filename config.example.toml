@@ -79,6 +79,14 @@ lead_in_level_db = -60
 # Notes waiting in other chats are not played.
 play_empty_tone = false
 
+[playback]
+# While a note is playing, two taps this close together jump backward.
+# The second tap rewinds immediately. A single tap during playback does nothing.
+# A tap while nothing is playing is not delayed by this window.
+rewind_enabled = true
+rewind_seconds = 10
+double_tap_window_ms = 375
+
 [telegram]
 # Only these chats can send notes to the box, and the box will only send to them.
 # A family group id is negative. Paste the number /chatid printed.

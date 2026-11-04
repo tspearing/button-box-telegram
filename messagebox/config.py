@@ -117,6 +117,16 @@ class AnnounceConfig:
 
 
 @dataclass(frozen=True)
+class PlaybackConfig:
+    """Double-tap rewind while a note is playing. Missing keys use these defaults."""
+
+    rewind_enabled: bool = True
+    rewind_seconds: float = 10.0
+    # Time from the end of one tap to the end of the next, while a note is playing.
+    double_tap_window_ms: int = 375
+
+
+@dataclass(frozen=True)
 class DevConfig:
     repeat_window_seconds: float = 0.7
     repeat_gap_seconds: float = 0.22
@@ -132,6 +142,7 @@ class AppConfig:
     recipient: RecipientConfig = field(default_factory=RecipientConfig)
     nfc: NfcConfig = field(default_factory=NfcConfig)
     announce: AnnounceConfig = field(default_factory=AnnounceConfig)
+    playback: PlaybackConfig = field(default_factory=PlaybackConfig)
     senders: dict[int, str] = field(default_factory=dict)
     cards: tuple[CardConfig, ...] = ()
     dev_keys: DevConfig = field(default_factory=DevConfig)
@@ -334,6 +345,7 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
     nfc = data.get("nfc") or {}
     dev_keys = data.get("dev") or {}
     announce = data.get("announce") or {}
+    playback = data.get("playback") or {}
     logging_table = data.get("logging") or {}
     raw_cards = data.get("cards") or []
     raw_senders = data.get("senders") or {}
@@ -399,6 +411,11 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
             sent_text=_spoken_setting(announce.get("sent_text", "Sent"), "Sent"),
             not_sent_text=_spoken_setting(announce.get("not_sent_text", "Not sent"), "Not sent"),
         ),
+        playback=PlaybackConfig(
+            rewind_enabled=bool(playback.get("rewind_enabled", True)),
+            rewind_seconds=float(playback.get("rewind_seconds", 10)),
+            double_tap_window_ms=int(playback.get("double_tap_window_ms", 375)),
+        ),
         senders=_senders(raw_senders),
         cards=_cards(raw_cards, allowed),
         dev_keys=DevConfig(
@@ -450,6 +467,10 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("announce.engine must be 'piper' or 'espeak'")
     if not 0 < config.announce.piper_length_scale <= 3:
         raise ValueError("announce.piper_length_scale must be greater than 0 and at most 3")
+    if config.playback.rewind_seconds <= 0:
+        raise ValueError("playback.rewind_seconds must be positive")
+    if not 0 <= config.playback.double_tap_window_ms <= 2000:
+        raise ValueError("playback.double_tap_window_ms must be from 0 to 2000")
     seen: set[str] = set()
     for card in config.cards:
         if card.uid in seen:

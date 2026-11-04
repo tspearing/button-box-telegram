@@ -34,6 +34,9 @@ def test_example_config_loads():
     assert config.telegram.allowed_chat_ids == ()
     assert config.telegram.family_chat_id is None
     assert config.audio.play_empty_tone is False
+    assert config.playback.rewind_enabled is True
+    assert config.playback.rewind_seconds == 10
+    assert config.playback.double_tap_window_ms == 375
     assert config.audio.lead_in_ms == 300
     assert config.audio.lead_in_mode == "noise"
     assert config.audio.lead_in_level_db == -60
@@ -65,6 +68,42 @@ def test_omitted_max_record_seconds_defaults_to_three_minutes(tmp_path):
     path.write_text("[button]\nhold_seconds = 0.6\n", encoding="utf-8")
     config = load_config(path)
     assert config.button.max_record_seconds == 180
+
+
+def test_playback_defaults_when_the_section_is_omitted(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[button]\nhold_seconds = 0.6\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.playback.rewind_enabled is True
+    assert config.playback.rewind_seconds == 10
+    assert config.playback.double_tap_window_ms == 375
+
+
+def test_playback_rewind_can_be_turned_off(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "\n".join(
+            [
+                "[playback]",
+                "rewind_enabled = false",
+                "rewind_seconds = 5",
+                "double_tap_window_ms = 400",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.playback.rewind_enabled is False
+    assert config.playback.rewind_seconds == 5
+    assert config.playback.double_tap_window_ms == 400
+
+
+def test_playback_rewind_seconds_must_be_positive(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[playback]\nrewind_seconds = 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="rewind_seconds"):
+        load_config(path)
 
 
 def test_lead_in_defaults_when_the_key_is_omitted(tmp_path):

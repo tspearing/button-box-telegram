@@ -64,6 +64,25 @@ def lead_in_amplitude(level_db: float) -> float:
     return 10 ** (float(level_db) / 20.0)
 
 
+def rewind_offset(
+    *,
+    origin: float,
+    elapsed: float,
+    lead_in: float,
+    rewind_seconds: float,
+    jumps: int = 1,
+) -> float:
+    """Where to resume after jumping back, never before the start of the file.
+
+    ``elapsed`` is wall time since this playback process started. The lead-in
+    only wakes the speaker, so it does not count as time into the note.
+    """
+    played = max(0.0, float(elapsed) - max(0.0, float(lead_in)))
+    position = max(0.0, float(origin)) + played
+    back = max(0.0, float(rewind_seconds)) * max(1, int(jumps))
+    return max(0.0, position - back)
+
+
 def playback_command(
     path: Path,
     device: str,
@@ -71,6 +90,7 @@ def playback_command(
     lead_in_ms: int = 300,
     lead_in_mode: str = "noise",
     lead_in_level_db: float = -60.0,
+    start_seconds: float = 0.0,
     destination: Path | None = None,
 ) -> list[str]:
     """Play ``path`` in one ffmpeg process.
@@ -98,7 +118,12 @@ def playback_command(
                 "anoisesrc=color=white:"
                 f"amplitude={amplitude:.8f}:sample_rate=48000"
             )
-        command.extend(["-f", "lavfi", "-t", seconds, "-i", source, "-i", str(path)])
+        command.extend(["-f", "lavfi", "-t", seconds, "-i", source])
+        # Seek the note only. The lead-in stays input 0 so the speaker still
+        # wakes, and -ss is not applied to that noise.
+        if start_seconds > 0:
+            command.extend(["-ss", f"{float(start_seconds):.3f}"])
+        command.extend(["-i", str(path)])
         # The clip is resampled without dropping its first samples. The
         # lead-in is input 0, so those samples reach the speaker first.
         command.extend(
@@ -113,6 +138,8 @@ def playback_command(
             ]
         )
     else:
+        if start_seconds > 0:
+            command.extend(["-ss", f"{float(start_seconds):.3f}"])
         command.extend(["-i", str(path), "-ac", "2", "-ar", "48000"])
     if destination is None:
         command.extend(["-f", "alsa", device])
@@ -220,13 +247,14 @@ class AudioEngine:
             max_seconds=max_seconds,
         )
 
-    def play_cmd(self, path: Path) -> list[str]:
+    def play_cmd(self, path: Path, *, start_seconds: float = 0.0) -> list[str]:
         return playback_command(
             path,
             self.resolve_speaker(),
             lead_in_ms=self.config.lead_in_ms,
             lead_in_mode=self.config.lead_in_mode,
             lead_in_level_db=self.config.lead_in_level_db,
+            start_seconds=start_seconds,
         )
 
     async def start_recording(self, output: Path, *, max_seconds: float) -> asyncio.subprocess.Process:
@@ -260,8 +288,8 @@ class AudioEngine:
             return False
         return True
 
-    async def play(self, path: Path) -> asyncio.subprocess.Process:
-        command = self.play_cmd(path)
+    async def play(self, path: Path, *, start_seconds: float = 0.0) -> asyncio.subprocess.Process:
+        command = self.play_cmd(path, start_seconds=start_seconds)
         return await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.DEVNULL,

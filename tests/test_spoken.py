@@ -54,8 +54,8 @@ class RecordingAudio(AudioEngine):
         self.commands: list[list[str]] = []
         self.on_play = None
 
-    async def play(self, path: Path):
-        self.commands.append(self.play_cmd(path))
+    async def play(self, path: Path, start_seconds: float = 0.0):
+        self.commands.append(self.play_cmd(path, start_seconds=start_seconds))
         self.played.append(Path(path))
         if self.on_play is not None:
             self.on_play(path)
