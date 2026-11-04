@@ -152,6 +152,8 @@ class Runtime:
             piper_voice=self.config.announce.piper_voice,
             piper_length_scale=self.config.announce.piper_length_scale,
             sample_rate=self.config.audio.sample_rate,
+            lead_in_mode=self.config.audio.lead_in_mode,
+            lead_in_level_db=self.config.audio.lead_in_level_db,
         )
         self._warm_announcements()
         self._selection_path = data / "selection.json"

@@ -59,12 +59,26 @@ def alsa_record_source(device: str, *, rate: int, channels: int) -> list[str]:
     return ["-f", "alsa", "-ac", str(channels), "-ar", str(rate), "-i", device]
 
 
-def playback_command(path: Path, device: str, *, lead_in_ms: int = 300) -> list[str]:
-    """Play ``path`` on ``device`` in one ffmpeg process.
+def lead_in_amplitude(level_db: float) -> float:
+    """Linear amplitude for a dBFS level. -60 dB is 0.001 of full scale."""
+    return 10 ** (float(level_db) / 20.0)
 
-    ``lead_in_ms`` is silence at the front of that same stream. The USB
-    speaker stays open through the silence and the clip. A second process
-    would let the device go back to sleep.
+
+def playback_command(
+    path: Path,
+    device: str,
+    *,
+    lead_in_ms: int = 300,
+    lead_in_mode: str = "noise",
+    lead_in_level_db: float = -60.0,
+    destination: Path | None = None,
+) -> list[str]:
+    """Play ``path`` in one ffmpeg process.
+
+    The lead-in and the clip are one filter graph and one output. Digital
+    silence does not wake a speaker that sleeps until it sees a signal, so
+    the default lead-in is quiet noise. ``destination`` writes a wav instead
+    of opening ALSA, for the diagnostic command.
     """
     command = [
         "ffmpeg",
@@ -72,22 +86,38 @@ def playback_command(path: Path, device: str, *, lead_in_ms: int = 300) -> list[
         "-loglevel",
         "error",
         "-nostdin",
-        "-i",
-        str(path),
+        "-y",
     ]
     if lead_in_ms > 0:
-        command.extend(["-af", f"adelay=delays={int(lead_in_ms)}:all=1"])
-    command.extend(
-        [
-            "-ac",
-            "2",
-            "-ar",
-            "48000",
-            "-f",
-            "alsa",
-            device,
-        ]
-    )
+        seconds = f"{int(lead_in_ms) / 1000:.3f}"
+        if lead_in_mode == "silence":
+            source = "anullsrc=r=48000:cl=mono"
+        else:
+            amplitude = lead_in_amplitude(lead_in_level_db)
+            source = (
+                "anoisesrc=color=white:"
+                f"amplitude={amplitude:.8f}:sample_rate=48000"
+            )
+        command.extend(["-f", "lavfi", "-t", seconds, "-i", source, "-i", str(path)])
+        # The clip is resampled without dropping its first samples. The
+        # lead-in is input 0, so those samples reach the speaker first.
+        command.extend(
+            [
+                "-filter_complex",
+                "[0:a]aformat=sample_fmts=s16:channel_layouts=stereo:sample_rates=48000[lead];"
+                "[1:a]aresample=async=0:first_pts=0,"
+                "aformat=sample_fmts=s16:channel_layouts=stereo:sample_rates=48000[clip];"
+                "[lead][clip]concat=n=2:v=0:a=1[out]",
+                "-map",
+                "[out]",
+            ]
+        )
+    else:
+        command.extend(["-i", str(path), "-ac", "2", "-ar", "48000"])
+    if destination is None:
+        command.extend(["-f", "alsa", device])
+    else:
+        command.append(str(destination))
     return command
 
 
@@ -195,6 +225,8 @@ class AudioEngine:
             path,
             self.resolve_speaker(),
             lead_in_ms=self.config.lead_in_ms,
+            lead_in_mode=self.config.lead_in_mode,
+            lead_in_level_db=self.config.lead_in_level_db,
         )
 
     async def start_recording(self, output: Path, *, max_seconds: float) -> asyncio.subprocess.Process:

@@ -57,9 +57,13 @@ class AudioConfig:
     channels: int = 1
     opus_bitrate: str = "32k"
     play_empty_tone: bool = False
-    # Silence at the start of each playback, so a USB speaker can wake up
-    # before the first syllable. Milliseconds. 0 turns it off.
+    # How long the speaker is nudged before the real sound. Milliseconds.
     lead_in_ms: int = 300
+    # "noise" is a very quiet signal. "silence" is digital zero, which does
+    # not wake a speaker that sleeps until it hears something.
+    lead_in_mode: str = "noise"
+    # Loudness of the noise lead-in. -60 dB is 0.001 of full scale.
+    lead_in_level_db: float = -60.0
 
 
 @dataclass(frozen=True)
@@ -361,6 +365,8 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
             opus_bitrate=str(audio.get("opus_bitrate", "32k")),
             play_empty_tone=bool(audio.get("play_empty_tone", False)),
             lead_in_ms=int(audio.get("lead_in_ms", 300)),
+            lead_in_mode=str(audio.get("lead_in_mode", "noise")).strip().lower(),
+            lead_in_level_db=float(audio.get("lead_in_level_db", -60.0)),
         ),
         telegram=TelegramConfig(allowed_chat_ids=allowed, family_chat_id=family),
         paths=PathsConfig(
@@ -408,6 +414,10 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("sample_rate is too low")
     if not 0 <= config.audio.lead_in_ms <= 2000:
         raise ValueError("audio.lead_in_ms must be from 0 to 2000")
+    if config.audio.lead_in_mode not in {"noise", "silence"}:
+        raise ValueError("audio.lead_in_mode must be 'noise' or 'silence'")
+    if not -90 <= config.audio.lead_in_level_db <= -20:
+        raise ValueError("audio.lead_in_level_db must be from -90 to -20")
     if config.audio.channels not in {1, 2}:
         raise ValueError("channels must be 1 or 2")
     if config.button.hold_seconds <= 0 or config.button.min_record_seconds <= 0:

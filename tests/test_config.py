@@ -35,6 +35,8 @@ def test_example_config_loads():
     assert config.telegram.family_chat_id is None
     assert config.audio.play_empty_tone is False
     assert config.audio.lead_in_ms == 300
+    assert config.audio.lead_in_mode == "noise"
+    assert config.audio.lead_in_level_db == -60
     assert config.announce.engine == "piper"
     assert config.announce.piper_voice == Path("/opt/message-box/voices/en_US-lessac-medium.onnx")
     assert config.announce.piper_length_scale == 1.0
@@ -63,7 +65,10 @@ def test_omitted_max_record_seconds_defaults_to_three_minutes(tmp_path):
 def test_lead_in_defaults_when_the_key_is_omitted(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("[audio]\nmic_device = \"auto\"\n", encoding="utf-8")
-    assert load_config(path).audio.lead_in_ms == 300
+    config = load_config(path)
+    assert config.audio.lead_in_ms == 300
+    assert config.audio.lead_in_mode == "noise"
+    assert config.audio.lead_in_level_db == -60
 
 
 def test_lead_in_rejects_a_negative_pause(tmp_path):

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import random
 import shutil
 import subprocess
 import threading
@@ -201,6 +202,9 @@ class Announcer:
         synth: Synth | None = None,
         *,
         attempts: list[SpeechAttempt] | None = None,
+        wake_ms: int = 0,
+        wake_mode: str = "noise",
+        wake_level_db: float = -60.0,
     ) -> None:
         if attempts is None:
             if synth is None:
@@ -208,6 +212,9 @@ class Announcer:
             attempts = [SpeechAttempt("custom", synth)]
         self.cache_dir = Path(cache_dir)
         self.attempts = list(attempts)
+        self.wake_ms = int(wake_ms)
+        self.wake_mode = wake_mode
+        self.wake_level_db = float(wake_level_db)
         self._lock = threading.Lock()
 
     def clip_for(self, text: str, override: Path | None = None) -> Path | None:
@@ -253,7 +260,55 @@ class Announcer:
             if not ok or not dest.is_file() or dest.stat().st_size <= 44:
                 dest.unlink(missing_ok=True)
                 return None
+            if self.wake_ms > 0:
+                try:
+                    prepend_wake(
+                        dest,
+                        ms=self.wake_ms,
+                        mode=self.wake_mode,
+                        level_db=self.wake_level_db,
+                    )
+                except Exception:
+                    log.exception("could not add the wake-up head")
             return dest
+
+
+def wake_samples(count: int, *, mode: str, level_db: float) -> list[int]:
+    """Samples that lead a clip. Noise is quiet but not digital zero."""
+    if count <= 0 or mode == "silence":
+        return [0] * max(0, count)
+    peak = max(1, int(round(32767 * (10 ** (float(level_db) / 20.0)))))
+    rng = random.Random(1)
+    return [rng.randint(-peak, peak) for _ in range(count)]
+
+
+def prepend_wake(path: Path, *, ms: int, mode: str, level_db: float) -> None:
+    """Put a wake-up head on a wav without dropping the samples already there."""
+    if ms <= 0 or not path.is_file():
+        return
+    with wave.open(str(path), "rb") as handle:
+        channels = handle.getnchannels()
+        width = handle.getsampwidth()
+        rate = handle.getframerate()
+        body = handle.readframes(handle.getnframes())
+    if width != 2 or channels not in {1, 2} or rate <= 0:
+        log.warning("leaving %s unchanged; it is not 16-bit mono or stereo", path.name)
+        return
+    count = int(rate * ms / 1000)
+    mono = wake_samples(count, mode=mode, level_db=level_db)
+    if channels == 2:
+        frames = b"".join(
+            int(sample).to_bytes(2, "little", signed=True) * 2 for sample in mono
+        )
+    else:
+        frames = b"".join(int(sample).to_bytes(2, "little", signed=True) for sample in mono)
+    temporary = path.with_name(path.stem + ".wake.wav")
+    with wave.open(str(temporary), "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(frames + body)
+    temporary.replace(path)
 
 
 def build_announcer(
@@ -263,15 +318,25 @@ def build_announcer(
     piper_voice: Path,
     piper_length_scale: float,
     sample_rate: int,
+    lead_in_mode: str = "noise",
+    lead_in_level_db: float = -60.0,
+    wake_ms: int = 60,
 ) -> Announcer:
-    """Piper first, unless the config asks for espeak-ng only."""
-    espeak = SpeechAttempt("espeak-ng", espeak_ng_synth)
+    """Piper first, unless the config asks for espeak-ng only.
+
+    The cache key includes the wake-up head, so clips made before that
+    head existed are not reused. The playback lead-in length is not part
+    of the key: changing it does not re-speak every name.
+    """
+    marker = f"wake={lead_in_mode}|{float(lead_in_level_db):.1f}|{int(wake_ms)}"
+    espeak = SpeechAttempt(f"espeak-ng|{marker}", espeak_ng_synth)
+    wake = dict(wake_ms=wake_ms, wake_mode=lead_in_mode, wake_level_db=lead_in_level_db)
     if engine == "espeak":
-        return Announcer(cache_dir, attempts=[espeak])
+        return Announcer(cache_dir, attempts=[espeak], **wake)
     size = piper_voice.stat().st_size if piper_voice.is_file() else 0
-    token = f"piper|{piper_voice}|{size}|{float(piper_length_scale):.3f}"
+    token = f"piper|{piper_voice}|{size}|{float(piper_length_scale):.3f}|{marker}"
     piper = SpeechAttempt(
         token,
         PiperSpeaker(piper_voice, piper_length_scale, sample_rate=sample_rate),
     )
-    return Announcer(cache_dir, attempts=[piper, espeak])
+    return Announcer(cache_dir, attempts=[piper, espeak], **wake)
