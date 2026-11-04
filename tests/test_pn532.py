@@ -333,4 +333,5 @@ def test_scan_text_uses_a_placeholder_chat_id():
     text = format_scan("04A1B2C3D4E5F6")
     assert 'uid = "04A1B2C3D4E5F6"' in text
     assert "chat_id = -1000000000001" in text
-    assert 'announce = "Chat name"' in text
+    assert "Leave announce out" in text
+    assert 'announce = "Chat name"' not in text

@@ -466,8 +466,6 @@ def _one_card(entry, allowed: tuple[int, ...]) -> CardConfig:
         raise ValueError(f"card {uid} announce text is longer than {MAX_ANNOUNCE_CHARS} characters")
     file_raw = entry.get("announce_file")
     announce_file = Path(str(file_raw)) if file_raw else None
-    if not announce and announce_file is None:
-        raise ValueError(f"card {uid} needs announce text or announce_file")
     return CardConfig(uid=uid, chat_id=chat_id, announce=announce, announce_file=announce_file)
 
 

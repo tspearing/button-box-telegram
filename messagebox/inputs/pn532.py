@@ -648,10 +648,11 @@ def format_scan(uid: str) -> str:
         "[[cards]]\n"
         f'uid = "{uid}"\n'
         "chat_id = -1000000000001\n"
-        'announce = "Chat name"\n'
+        '# announce = "Short name"\n'
         "\n"
         "Replace chat_id with one id from allowed_chat_ids.\n"
-        "announce is what the speaker says. Add announce_file to play a wav instead.\n"
+        "Leave announce out to speak the Telegram chat name.\n"
+        "Set announce for a shorter word, or announce_file to play a wav.\n"
     )
 
 

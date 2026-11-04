@@ -15,6 +15,12 @@ from pathlib import Path
 
 from messagebox import __version__
 from messagebox.announce import Announcer, build_announcer
+from messagebox.chat_titles import (
+    TITLE_REFRESH_SECONDS,
+    ChatTitles,
+    announcement_for,
+    fetch_chat_title,
+)
 from messagebox.audio import AudioEngine, ffmpeg_available
 from messagebox.button_machine import ButtonMachine
 from messagebox.cards import build_directory
@@ -59,6 +65,7 @@ class Runtime:
         self._directory: RecipientDirectory | None = None
         self._sounds: SoundBank | None = None
         self._announcer: Announcer | None = None
+        self._titles: ChatTitles | None = None
         self._selection_path: Path | None = None
         self._cards: asyncio.Queue = asyncio.Queue()
         self._card_source: Pn532CardSource | None = None
@@ -146,6 +153,8 @@ class Runtime:
         self._outbox = DiskQueue(data / "outbox")
         self._sounds = SoundBank(data / "sounds")
         self._sounds.ensure()
+        self._titles = ChatTitles(data / "chat-titles.json")
+        self._titles.load()
         self._announcer = build_announcer(
             data / "announce-cache",
             engine=self.config.announce.engine,
@@ -222,6 +231,7 @@ class Runtime:
             inbox=self._inbox,
             on_queued=self._on_incoming,
             download_dir=data / "tmp",
+            on_title=self._on_chat_title,
         )
         application = bridge.build()
         self._loop = asyncio.get_running_loop()
@@ -252,6 +262,7 @@ class Runtime:
             asyncio.create_task(self._audio_loop(), name="audio"),
             asyncio.create_task(self._outbox_loop(), name="outbox"),
             asyncio.create_task(self._card_loop(), name="cards"),
+            asyncio.create_task(self._title_loop(), name="titles"),
             asyncio.create_task(self._poll(application), name="telegram"),
         ]
         poll_task = tasks[-1]
@@ -351,7 +362,7 @@ class Runtime:
                 "Piper voice %s is not installed; card announcements will use espeak-ng",
                 voice,
             )
-        phrases = [(card.announce, card.announce_file) for card in self.config.cards]
+        phrases = [self._phrase_for_card(card) for card in self.config.cards]
         task = asyncio.create_task(
             asyncio.to_thread(announcer.warm, phrases),
             name="announce-warm",
@@ -817,10 +828,11 @@ class Runtime:
         try:
             # Synthesis blocks while the model runs. Keep it off the event
             # loop so the button, the microphone, and Telegram keep running.
+            phrase, clip_path = self._phrase_for_recipient(recipient)
             clip = await asyncio.to_thread(
                 self._announcer.clip_for,
-                recipient.display_name,
-                recipient.announce_clip,
+                phrase,
+                clip_path,
             )
         except Exception:
             log.exception("could not prepare the announcement")
@@ -829,6 +841,68 @@ class Runtime:
             log.info("no announcement audio for %s", recipient.display_name)
             return
         await self._play_speech(clip)
+
+    def _phrase_for_card(self, card) -> tuple[str, Path | None]:
+        if self._titles is None:
+            from messagebox.chat_titles import SPOKEN_FALLBACK
+
+            return card.announce or SPOKEN_FALLBACK, card.announce_file
+        return announcement_for(card, self._titles)
+
+    def _phrase_for_recipient(self, recipient) -> tuple[str, Path | None]:
+        uid = recipient.key.removeprefix("card-") if recipient.key.startswith("card-") else ""
+        for card in self.config.cards:
+            if card.uid == uid:
+                return self._phrase_for_card(card)
+        return recipient.display_name, recipient.announce_clip
+
+    async def _on_chat_title(self, chat_id: int, raw_title: str) -> None:
+        if self._titles is None:
+            return
+        changed = self._titles.remember(chat_id, raw_title)
+        if not changed or self._announcer is None:
+            return
+        task = asyncio.create_task(
+            asyncio.to_thread(self._announcer.clip_for, changed, None),
+            name="announce-title",
+        )
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _refresh_titles(self) -> None:
+        bot = self._bot
+        titles = self._titles
+        if bot is None or titles is None:
+            return
+        seen: set[int] = set()
+        for card in self.config.cards:
+            if card.chat_id in seen or card.announce:
+                continue
+            seen.add(card.chat_id)
+            raw = await fetch_chat_title(bot, card.chat_id)
+            if raw:
+                await self._on_chat_title(card.chat_id, raw)
+
+    async def _title_loop(self) -> None:
+        """Read group names soon after Telegram connects, then every few hours."""
+        while not self._stop.is_set():
+            if self._bot is None:
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=2)
+                    return
+                except TimeoutError:
+                    continue
+            try:
+                await self._refresh_titles()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("could not refresh chat titles")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=TITLE_REFRESH_SECONDS)
+                return
+            except TimeoutError:
+                continue
 
     def _speech_blocked(self) -> bool:
         """True while a recording or a queued note owns the speaker."""
