@@ -4,6 +4,10 @@ This is the behaviour of the box, without GPIO, audio devices, or Telegram:
 
 * a short press plays the oldest unheard note for the focused chat
 * when that chat has none waiting, the same press replays its latest note
+* a single tap while a note is playing does nothing
+* two taps that close together, while a note is playing, ask for a rewind
+* the tap that started playback is not half of that pair, so an idle tap
+  is not delayed
 * a note is kept after it is heard; older heard notes for that chat are dropped
 * a hold records, and incoming notes that arrive during the recording stay
   queued and never start playing
@@ -31,6 +35,7 @@ LAMP_RECORDING = "recording"
 class EffectKind(Enum):
     PLAY = "play"
     EMPTY = "empty"
+    REWIND = "rewind"
     START_RECORD = "start_record"
     STOP_RECORD = "stop_record"
     DISCARD_RECORD = "discard_record"
@@ -73,16 +78,24 @@ class Coordinator:
         *,
         play_empty_tone: bool = False,
         focused_chat: Callable[[], int] | None = None,
+        rewind_enabled: bool = True,
+        double_tap_window: float = 0.375,
     ) -> None:
         self.machine = machine
         self.inbox = inbox
         self.play_empty_tone = play_empty_tone
+        self.rewind_enabled = rewind_enabled
+        self.double_tap_window = double_tap_window
         self._focused_chat = focused_chat or (lambda: 0)
         self.recording = False
         self.mic_open = False
         self.playing_id: str | None = None
         self._replaying = False
         self._lamp: str | None = None
+        # Release time of the previous tap during this playback. Not set by
+        # the tap that started the note, so that tap is not delayed.
+        self._tap_at: float | None = None
+        self._released_at: float | None = None
 
     def lamp_mode(self) -> str:
         # Steady only while the mic is open. Holding the button, and the
@@ -105,6 +118,7 @@ class Coordinator:
         return self._apply(self.machine.press(now))
 
     def release(self, now: float) -> list[Effect]:
+        self._released_at = now
         return self._apply(self.machine.release(now))
 
     def tick(self, now: float) -> list[Effect]:
@@ -143,6 +157,7 @@ class Coordinator:
         if current:
             self.playing_id = None
             self._replaying = False
+            self._tap_at = None
         if success and current and not replaying:
             self.inbox.mark_heard(item_id)
         return self._with_lamp([])
@@ -172,6 +187,7 @@ class Coordinator:
             return self._short_press()
         if action.kind is ActionKind.RECORD_START:
             self.recording = True
+            self._tap_at = None
             return [Effect(EffectKind.START_RECORD)]
         if action.kind is ActionKind.RECORD_STOP:
             self.recording = False
@@ -200,8 +216,14 @@ class Coordinator:
             return 0
 
     def _short_press(self) -> list[Effect]:
-        if self.recording or self.playing_id is not None:
+        if self.recording:
+            self._tap_at = None
             return []
+        if self.playing_id is not None:
+            return self._tap_while_playing()
+        # Idle. Play in this same step. Do not arm a double-tap, or the
+        # next tap would have to wait out the window.
+        self._tap_at = None
         choice = self.inbox.next_play(self._chat_id())
         if choice is None:
             # This chat has never had a note (or its copy is gone). The soft
@@ -215,6 +237,23 @@ class Coordinator:
         return [
             Effect(EffectKind.PLAY, item_id=self.playing_id, replay=self._replaying)
         ]
+
+    def _tap_while_playing(self) -> list[Effect]:
+        """A lone tap still does nothing. A second tap inside the window rewinds.
+
+        The rewind is decided on the second release, so the first tap is not
+        held back. The window is only consulted while a note is already playing.
+        """
+        if not self.rewind_enabled:
+            return []
+        now = self._released_at
+        previous = self._tap_at
+        self._tap_at = now
+        if now is None or previous is None:
+            return []
+        if now - previous <= self.double_tap_window:
+            return [Effect(EffectKind.REWIND, item_id=self.playing_id)]
+        return []
 
     def _with_lamp(self, effects: list[Effect]) -> list[Effect]:
         mode = self.lamp_mode()

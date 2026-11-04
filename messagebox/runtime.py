@@ -22,7 +22,7 @@ from messagebox.chat_titles import (
     fetch_chat_title,
 )
 from messagebox.cues import sender_intro, startup_cues
-from messagebox.audio import AudioEngine, ffmpeg_available
+from messagebox.audio import AudioEngine, ffmpeg_available, rewind_offset
 from messagebox.button_machine import ButtonMachine
 from messagebox.cards import build_directory
 from messagebox.config import AppConfig, load_token, resolved_family_chat_id
@@ -77,6 +77,10 @@ class Runtime:
         self._capture_finish_queued = False
         self._play_proc = None
         self._play_token = 0
+        self._rewind = asyncio.Event()
+        self._rewinds_pending = 0
+        self._segment_origin = 0.0
+        self._segment_started: float | None = None
         self._background: set[asyncio.Task] = set()
         self._deferred: list[str] = []
         self._was_recording = False
@@ -184,6 +188,8 @@ class Runtime:
             self._inbox,
             play_empty_tone=self.config.audio.play_empty_tone,
             focused_chat=self._focused_chat_id,
+            rewind_enabled=self.config.playback.rewind_enabled,
+            double_tap_window=self.config.playback.double_tap_window_ms / 1000,
         )
         patterns = LampPatterns(
             unheard_on_seconds=self.config.lamp.unheard_on_seconds,
@@ -490,6 +496,8 @@ class Runtime:
                 self._jobs.put_nowait(_job(self.finish_capture, False, effect.recorded_for))
             elif effect.kind is EffectKind.PLAY and effect.item_id:
                 self._spawn(self.begin_playback(effect.item_id, replay=effect.replay))
+            elif effect.kind is EffectKind.REWIND:
+                self._request_rewind()
             elif effect.kind is EffectKind.EMPTY:
                 self._spawn(self.play_cue("empty"))
 
@@ -671,6 +679,10 @@ class Runtime:
             return
         self._play_token += 1
         token = self._play_token
+        self._rewinds_pending = 0
+        self._rewind.clear()
+        self._segment_origin = 0.0
+        self._segment_started = None
         log.info("%s %s", "replaying" if replay else "playing", item.id)
         await self._play_item(item, token)
 
@@ -703,28 +715,46 @@ class Runtime:
                 intro_clip = await asyncio.to_thread(self._announcer.clip_for, intro, None)
             except Exception:
                 log.exception("could not prepare the sender introduction")
+        intro_done = intro_clip is None
+        note_origin = 0.0
         try:
             async with self._speaker_lock:
-                if token != self._play_token:
-                    success = False
-                else:
-                    if intro_clip is not None and token == self._play_token:
-                        intro_proc = await self.audio.play(intro_clip)
-                        self._play_proc = intro_proc
-                        await intro_proc.wait()
-                        if self._play_proc is intro_proc:
-                            self._play_proc = None
-                    if token != self._play_token:
-                        success = False
-                    else:
-                        proc = await self.audio.play(item.path)
-                        self._play_proc = proc
-                        code = await proc.wait()
-                        if self._play_proc is proc:
-                            self._play_proc = None
-                        success = code == 0 and token == self._play_token
-                        if not success and token == self._play_token:
-                            log.error("playback of %s failed (ffmpeg %s)", item.id, code)
+                while token == self._play_token:
+                    if not intro_done:
+                        if self._rewinds_pending:
+                            self._apply_pending_rewinds()
+                            intro_done = True
+                            note_origin = 0.0
+                            continue
+                        status, _code = await self._spin(intro_clip, token, start_seconds=0.0, note=False)
+                        if status == "interrupted":
+                            break
+                        if status == "rewind":
+                            # A double-tap during the introduction skips the
+                            # rest of it and starts the note at the beginning.
+                            # The introduction is not said again.
+                            self._apply_pending_rewinds()
+                            intro_done = True
+                            note_origin = 0.0
+                            continue
+                        intro_done = True
+                    if self._rewinds_pending:
+                        note_origin = self._apply_pending_rewinds()
+                        continue
+                    status, code = await self._spin(
+                        item.path,
+                        token,
+                        start_seconds=note_origin,
+                        note=True,
+                    )
+                    if status == "rewind":
+                        note_origin = self._apply_pending_rewinds()
+                        log.info("rewinding %s to %.1fs", item.id, note_origin)
+                        continue
+                    success = status == "finished"
+                    if status == "failed" and token == self._play_token:
+                        log.error("playback of %s failed (ffmpeg %s)", item.id, code)
+                    break
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -741,8 +771,103 @@ class Runtime:
             waiting = self._inbox.waiting_count(self._directory.current.chat_id)
             log.info("played %s, %s still waiting in this chat", item.id, waiting)
 
+    async def _spin(self, path: Path, token: int, *, start_seconds: float, note: bool) -> tuple[str, int | None]:
+        """Play one clip. ``note`` tracks position so a rewind can seek the file."""
+        proc = await self.audio.play(path, start_seconds=start_seconds if note else 0.0)
+        self._play_proc = proc
+        if note:
+            self._segment_origin = start_seconds
+            self._segment_started = time.monotonic()
+        try:
+            code, jumped = await self._wait_or_rewind(proc)
+        finally:
+            if self._play_proc is proc:
+                self._play_proc = None
+        if token != self._play_token:
+            return "interrupted", code
+        if jumped:
+            return "rewind", code
+        if code == 0:
+            return "finished", code
+        return "failed", code
+
+    async def _wait_or_rewind(self, proc) -> tuple[int | None, bool]:
+        """Wait until ffmpeg exits, or a double-tap asks to jump backward."""
+        wait_task = asyncio.create_task(proc.wait())
+        rewind_task = asyncio.create_task(self._rewind.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {wait_task, rewind_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            wait_task.cancel()
+            rewind_task.cancel()
+            if proc.returncode is None:
+                proc.terminate()
+            raise
+        jumped = rewind_task in done and self._rewinds_pending > 0
+        if jumped:
+            if not rewind_task.done():
+                rewind_task.cancel()
+            else:
+                rewind_task.result()
+            if not wait_task.done():
+                wait_task.cancel()
+            if proc.returncode is None:
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=1)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+            return proc.returncode, True
+        if not rewind_task.done():
+            rewind_task.cancel()
+            try:
+                await rewind_task
+            except asyncio.CancelledError:
+                pass
+        return wait_task.result(), False
+
+    def _request_rewind(self) -> None:
+        if not self.config.playback.rewind_enabled:
+            return
+        self._rewinds_pending += 1
+        self._rewind.set()
+
+    def _apply_pending_rewinds(self) -> float:
+        """Consume queued jumps and return the file position to resume from."""
+        jumps = self._rewinds_pending
+        self._rewinds_pending = 0
+        self._rewind.clear()
+        if jumps <= 0:
+            return self._segment_origin
+        if self._segment_started is None:
+            # No note samples have played in this segment yet: either the
+            # introduction is still going, or the next seek has not started.
+            # Count the jump from the resume point, and do not subtract the
+            # lead-in a second time.
+            elapsed = 0.0
+            lead_in = 0.0
+        else:
+            elapsed = time.monotonic() - self._segment_started
+            lead_in = self.config.audio.lead_in_ms / 1000
+        origin = rewind_offset(
+            origin=self._segment_origin,
+            elapsed=elapsed,
+            lead_in=lead_in,
+            rewind_seconds=self.config.playback.rewind_seconds,
+            jumps=jumps,
+        )
+        self._segment_origin = origin
+        self._segment_started = None
+        return origin
+
     def _interrupt_playback(self) -> None:
         self._play_token += 1
+        self._rewinds_pending = 0
+        self._rewind.clear()
         proc = self._play_proc
         if proc is not None and proc.returncode is None:
             proc.terminate()

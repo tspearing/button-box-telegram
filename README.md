@@ -3,7 +3,8 @@
 A screen-free voice-note box for a young child. There is one big button.
 
 - **Hold** the button until you hear a beep, talk, and let go. The box sends a Telegram voice note to the focused chat.
-- **Tap** the button to hear the oldest unheard note from the chat the box is focused on. Notes for other chats stay saved. When this chat has nothing waiting, a tap plays its latest note again, until a newer note arrives in that chat.
+- **Tap** the button to hear the oldest unheard note from the chat the box is focused on. Notes for other chats stay saved. When this chat has nothing waiting, a tap plays its latest note again, until a newer note arrives in that chat. A tap while the box is idle plays at once.
+- **Double-tap** while a note is playing to jump back 10 seconds in that note. One tap during playback does nothing. The name is not said again.
 - **Tap an NFC card** to focus that chat. Recordings go there, and taps play that chat's notes. The speaker says the chat's name. The choice stays until a different card is tapped.
 - Notes never play by themselves, and a new note never interrupts a recording.
 - A lamp (optional) gives a short flash every 3 seconds while the focused chat has unheard notes, and blinks evenly (1 second on, 1 second off) when only some other chat does. It is off when nothing is waiting. It comes on steady only while a recording is actually in progress (the microphone is open), not when the button first goes down.
@@ -33,7 +34,7 @@ You can build and test all of this on the bench, with no box around it.
 
 1. Someone in an allowed chat sends a voice note (or an audio file) to the bot.
 2. The Pi downloads it and stores it on the SD card. Nothing plays yet. If that chat is the one the box is focused on, the lamp gives a short flash every 3 seconds. If only some other chat has unheard notes, the lamp blinks evenly, 1 second on and 1 second off.
-3. Tap the button. The oldest unheard note for the focused chat plays. Before the note, the box says "Message from" and the sender's name. The lamp keeps showing what is still unheard, and it changes once that note has been heard. Tap again for the next unheard note in that chat. Notes for other chats stay saved.
+3. Tap the button. The oldest unheard note for the focused chat plays. Before the note, the box says "Message from" and the sender's name. The lamp keeps showing what is still unheard, and it changes once that note has been heard. While that note is still playing, one tap does nothing. Two taps within about 0.4 seconds jump back 10 seconds and keep playing, without saying the name again. After the note has finished, tap again for the next unheard note in that chat. Notes for other chats stay saved.
 4. When that chat has no unheard notes left, a tap plays its latest note again. Another tap plays that same note, until a new note arrives in that chat. The box keeps that latest note so this still works after a restart, and deletes older heard notes for that chat.
 5. Hold the button. After about 0.6 seconds there is a short beep. That means "talk now". The lamp stays as it was while the button is going down and during that beep. It comes on steady when the microphone opens, and it goes back to whatever notes are still waiting when the recording stops.
 6. Let go. The recording is turned into an OGG/Opus file and sent to the focused chat. After Telegram accepts it, the box says "Sent". If that spoken line is turned off, a higher beep plays instead.
@@ -358,7 +359,7 @@ Watch the log, then hold the button for a couple of seconds after the beep and l
 journalctl -u message-box -f
 ```
 
-The focused chat should get a voice note, and the box says "Sent". Then reply with a voice note from your phone, in that same chat. The log should say it was queued. Tap the button (a press shorter than half a second). The box says "Message from" and the sender's name, then the note plays. A second tap plays that introduction and the note again. A note sent in a different allowed chat waits until that chat's card is tapped. A card tap during this test does not block the button.
+The focused chat should get a voice note, and the box says "Sent". Then reply with a voice note from your phone, in that same chat. The log should say it was queued. Tap the button (a press shorter than half a second). The box says "Message from" and the sender's name, then the note plays. While it is playing, two quick taps jump back 10 seconds. After it finishes, another tap plays that introduction and the note again. A note sent in a different allowed chat waits until that chat's card is tapped. A card tap during this test does not block the button.
 
 Leave the lamp disconnected for this test. The log will still say `lamp waiting` (a short flash every 3 seconds), `lamp elsewhere` (1 second on, 1 second off), or `lamp recording` (steady, once the microphone is open) if GPIO is working. If opening the lamp pin fails, the box keeps running without it.
 
@@ -418,7 +419,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The tests cover the queue (order, and that it is still there after a new process opens the same folder), per-chat playback and replay, the button state machine (tap versus hold, too-short recordings, the three-minute cap), the rule that an incoming note does not start playback, card selection, the PN532 frame parser, announcements with a stand-in for Piper and for espeak-ng, the "Message from" introduction, and the spoken "Sent" confirmation. They do not need a Pi, a reader, a voice model, or a Telegram token.
+The tests cover the queue (order, and that it is still there after a new process opens the same folder), per-chat playback and replay, the button state machine (tap versus hold, too-short recordings, the three-minute cap), double-tap rewind while a note is playing, the rule that an incoming note does not start playback, card selection, the PN532 frame parser, announcements with a stand-in for Piper and for espeak-ng, the "Message from" introduction, and the spoken "Sent" confirmation. They do not need a Pi, a reader, a voice model, or a Telegram token.
 
 ## Config reference
 
@@ -437,6 +438,9 @@ The tests cover the queue (order, and that it is still there after a new process
 | `audio.lead_in_mode` | `noise` | `noise` is a very quiet signal. `silence` is digital zero. |
 | `audio.lead_in_level_db` | `-60` | Loudness of the noise nudge. Closer to zero is louder. |
 | `audio.play_empty_tone` | `false` | Soft tone when the focused chat has no note to play and none to replay. |
+| `playback.rewind_enabled` | `true` | Two quick taps while a note is playing jump backward. |
+| `playback.rewind_seconds` | `10` | How far those taps jump. Past the start, the note restarts at 0. |
+| `playback.double_tap_window_ms` | `375` | Max time from the end of one tap to the end of the next, while a note is playing. |
 | `telegram.allowed_chat_ids` | empty | Chats that may send, and the only chats we will send to. |
 | `nfc.i2c_bus` / `i2c_address` | `1` / `36` | PN532 bus and address. 36 is 0x24. |
 | `announce.engine` | `piper` | `piper` or `espeak`. Missing Piper falls back to espeak-ng. |
