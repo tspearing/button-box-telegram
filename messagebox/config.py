@@ -13,7 +13,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from messagebox.announce import MAX_ANNOUNCE_CHARS, clean_announce_text
+from messagebox.announce import MAX_ANNOUNCE_CHARS, clean_announce_text, speakable_title
 from messagebox.recipients import normalize_uid
 
 
@@ -107,6 +107,13 @@ class AnnounceConfig:
     engine: str = "piper"
     piper_voice: Path = DEFAULT_PIPER_VOICE
     piper_length_scale: float = 1.0
+    # Say "Message from <name>" before a received voice note.
+    announce_sender: bool = True
+    # Say sent_text after Telegram accepts an outgoing note.
+    confirm_sent: bool = True
+    sent_text: str = "Sent"
+    # Empty means stay quiet when a send fails. The note is still retried.
+    not_sent_text: str = "Not sent"
 
 
 @dataclass(frozen=True)
@@ -125,6 +132,7 @@ class AppConfig:
     recipient: RecipientConfig = field(default_factory=RecipientConfig)
     nfc: NfcConfig = field(default_factory=NfcConfig)
     announce: AnnounceConfig = field(default_factory=AnnounceConfig)
+    senders: dict[int, str] = field(default_factory=dict)
     cards: tuple[CardConfig, ...] = ()
     dev_keys: DevConfig = field(default_factory=DevConfig)
     log_level: str = "INFO"
@@ -328,6 +336,7 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
     announce = data.get("announce") or {}
     logging_table = data.get("logging") or {}
     raw_cards = data.get("cards") or []
+    raw_senders = data.get("senders") or {}
     family = telegram.get("family_chat_id", None)
     if family is not None:
         family = int(family)
@@ -385,7 +394,12 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
             engine=str(announce.get("engine", "piper")).strip().lower(),
             piper_voice=Path(str(announce.get("piper_voice", str(DEFAULT_PIPER_VOICE)))),
             piper_length_scale=float(announce.get("piper_length_scale", 1.0)),
+            announce_sender=bool(announce.get("announce_sender", True)),
+            confirm_sent=bool(announce.get("confirm_sent", True)),
+            sent_text=_spoken_setting(announce.get("sent_text", "Sent"), "Sent"),
+            not_sent_text=_spoken_setting(announce.get("not_sent_text", "Not sent"), "Not sent"),
         ),
+        senders=_senders(raw_senders),
         cards=_cards(raw_cards, allowed),
         dev_keys=DevConfig(
             repeat_window_seconds=float(dev_keys.get("repeat_window_seconds", 0.7)),
@@ -441,6 +455,29 @@ def _validate(config: AppConfig) -> None:
         if card.uid in seen:
             raise ValueError(f"card uid {card.uid} is listed more than once")
         seen.add(card.uid)
+
+
+def _senders(raw) -> dict[int, str]:
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("senders must be a table of user id = \"spoken name\"")
+    parsed: dict[int, str] = {}
+    for key, value in raw.items():
+        try:
+            user_id = int(str(key))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"sender id {key!r} is not a number") from exc
+        spoken = speakable_title(str(value or ""))
+        if spoken:
+            parsed[user_id] = spoken
+    return parsed
+
+
+def _spoken_setting(value, default: str) -> str:
+    if value is None:
+        return default
+    return speakable_title(str(value))
 
 
 def _cards(raw, allowed: tuple[int, ...]) -> tuple[CardConfig, ...]:

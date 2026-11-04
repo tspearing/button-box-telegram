@@ -29,6 +29,7 @@ class TelegramBridge:
         on_queued: Callable[[], Awaitable[None]],
         download_dir: Path,
         on_title: Callable[[int, str], Awaitable[None]] | None = None,
+        on_incoming_meta: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         self.token = token
         self.allowed = set(allowed)
@@ -36,6 +37,7 @@ class TelegramBridge:
         self._on_queued = on_queued
         self.download_dir = download_dir
         self._on_title = on_title
+        self._on_incoming_meta = on_incoming_meta
         self._ignored: set[int] = set()
 
     def build(self):
@@ -106,13 +108,17 @@ class TelegramBridge:
             dest = dest.with_suffix(suffix)
             await tg_file.download_to_drive(custom_path=str(dest))
             label = None
+            sender_id = None
             if user is not None:
+                sender_id = user.id
                 label = user.first_name or user.username
             item = self.inbox.enqueue(
                 dest,
                 {
                     "source_chat_id": chat.id,
                     "kind": kind,
+                    "sender_id": sender_id,
+                    "sender_name": label,
                     "sender_label": label,
                     "created_at": time.time(),
                     "duration": getattr(attachment, "duration", None),
@@ -131,6 +137,11 @@ class TelegramBridge:
             len(self.inbox),
         )
         await self._on_queued()
+        if self._on_incoming_meta is not None:
+            try:
+                await self._on_incoming_meta(dict(item.meta))
+            except Exception:
+                log.exception("could not prepare the sender introduction")
         await self._note_title(chat)
 
     async def on_seen(self, update, context) -> None:

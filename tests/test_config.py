@@ -40,6 +40,11 @@ def test_example_config_loads():
     assert config.announce.engine == "piper"
     assert config.announce.piper_voice == Path("/opt/message-box/voices/en_US-lessac-medium.onnx")
     assert config.announce.piper_length_scale == 1.0
+    assert config.announce.announce_sender is True
+    assert config.announce.confirm_sent is True
+    assert config.announce.sent_text == "Sent"
+    assert config.announce.not_sent_text == "Not sent"
+    assert config.senders == {}
     assert config.paths.data_dir == Path("/var/lib/message-box")
     assert config.paths.env_file == Path("/etc/message-box/env")
     assert config.cards == ()
@@ -78,6 +83,69 @@ def test_lead_in_rejects_a_negative_pause(tmp_path):
         load_config(path)
 
 
+def test_sender_names_use_placeholder_ids(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "\n".join(
+            [
+                "[senders]",
+                '123456789 = "Mom"',
+                '234567890 = "Dad 🎉"',
+                '345678901 = "Grandma"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.senders == {123456789: "Mom", 234567890: "Dad", 345678901: "Grandma"}
+    assert config.announce.announce_sender is True
+    assert config.announce.confirm_sent is True
+    assert config.announce.sent_text == "Sent"
+    assert config.announce.not_sent_text == "Not sent"
+
+
+def test_spoken_cue_defaults_when_the_keys_are_omitted(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[announce]\nengine = \"espeak\"\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.announce.engine == "espeak"
+    assert config.announce.announce_sender is True
+    assert config.announce.confirm_sent is True
+    assert config.announce.sent_text == "Sent"
+    assert config.announce.not_sent_text == "Not sent"
+    assert config.senders == {}
+
+
+def test_spoken_cues_can_be_turned_off(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "\n".join(
+            [
+                "[announce]",
+                "announce_sender = false",
+                "confirm_sent = false",
+                'sent_text = "Sent 🎉"',
+                'not_sent_text = ""',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.announce.announce_sender is False
+    assert config.announce.confirm_sent is False
+    assert config.announce.sent_text == "Sent"
+    assert config.announce.not_sent_text == ""
+
+
+def test_a_sender_id_must_be_a_number(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[senders]\nmom = "Mom"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="sender id"):
+        load_config(path)
+
+
 def test_announce_defaults_to_piper_when_the_section_is_missing(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("[lamp]\nenabled = true\n", encoding="utf-8")
@@ -85,6 +153,8 @@ def test_announce_defaults_to_piper_when_the_section_is_missing(tmp_path):
     assert config.announce.engine == "piper"
     assert config.announce.piper_voice == Path("/opt/message-box/voices/en_US-lessac-medium.onnx")
     assert config.announce.piper_length_scale == 1.0
+    assert config.announce.announce_sender is True
+    assert config.announce.confirm_sent is True
 
 
 def test_announce_engine_must_be_known(tmp_path):
