@@ -355,17 +355,18 @@ def test_duplicate_and_bad_uids_are_rejected(tmp_path):
         )
 
 
-def test_a_card_needs_words_or_a_file(tmp_path):
-    with pytest.raises(ValueError, match="announce"):
-        load_config(
-            _write(
-                tmp_path,
-                """
-                [telegram]
-                allowed_chat_ids = [-1000000000001]
-                [[cards]]
-                uid = "04A1B2C3D4E5F6"
-                chat_id = -1000000000001
-                """,
-            )
+def test_a_card_can_omit_the_spoken_name(tmp_path):
+    config = load_config(
+        _write(
+            tmp_path,
+            """
+            [telegram]
+            allowed_chat_ids = [-1000000000001]
+            [[cards]]
+            uid = "04A1B2C3D4E5F6"
+            chat_id = -1000000000001
+            """,
         )
+    )
+    assert config.cards[0].announce == ""
+    assert config.cards[0].announce_file is None

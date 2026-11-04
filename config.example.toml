@@ -101,8 +101,9 @@ i2c_address = 36
 # [[cards]]
 # uid = "04A1B2C3D4E5F6"
 # chat_id = -1000000000001
+# Optional. Leave this out and the box speaks the Telegram chat name.
 # announce = "German"
-# Optional wav played instead of the spoken announce text.
+# Optional wav played instead of speech.
 # announce_file = "/var/lib/message-box/clips/german.wav"
 #
 # [[cards]]

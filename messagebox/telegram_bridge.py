@@ -28,12 +28,14 @@ class TelegramBridge:
         inbox: DiskQueue | Inbox,
         on_queued: Callable[[], Awaitable[None]],
         download_dir: Path,
+        on_title: Callable[[int, str], Awaitable[None]] | None = None,
     ) -> None:
         self.token = token
         self.allowed = set(allowed)
         self.inbox = inbox
         self._on_queued = on_queued
         self.download_dir = download_dir
+        self._on_title = on_title
         self._ignored: set[int] = set()
 
     def build(self):
@@ -53,6 +55,8 @@ class TelegramBridge:
         app.add_handler(CommandHandler("chatid", self.on_chatid))
         app.add_handler(CommandHandler("start", self.on_start))
         app.add_handler(MessageHandler(_media_filter(filters), self.on_media))
+        # A second group so a title update does not swallow the voice note.
+        app.add_handler(MessageHandler(filters.ALL, self.on_seen), group=1)
         app.add_error_handler(self.on_error)
         return app
 
@@ -127,6 +131,27 @@ class TelegramBridge:
             len(self.inbox),
         )
         await self._on_queued()
+        await self._note_title(chat)
+
+    async def on_seen(self, update, context) -> None:
+        """Remember a group title from any allowed message. Does not reply."""
+        chat = update.effective_chat
+        if chat is None:
+            return
+        await self._note_title(chat)
+
+    async def _note_title(self, chat) -> None:
+        if self._on_title is None:
+            return
+        if not should_accept_chat(chat.id, self.allowed):
+            return
+        title = getattr(chat, "title", None)
+        if not title:
+            return
+        try:
+            await self._on_title(int(chat.id), str(title))
+        except Exception:
+            log.exception("could not save a chat title")
 
     async def on_error(self, update, context) -> None:
         err = context.error
