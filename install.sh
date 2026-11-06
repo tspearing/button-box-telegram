@@ -213,7 +213,7 @@ if grep -Eq '^[[:space:]]*TELEGRAM_BOT_TOKEN=.+$' "${ENV_FILE}"; then
 else
   echo "The token is still empty, so the service was enabled but not started."
   echo "1. Edit ${ENV_FILE} and set TELEGRAM_BOT_TOKEN."
-  echo "2. Edit ${CONFIG_FILE} and set allowed_chat_ids (see the README)."
+  echo "2. Edit ${CONFIG_FILE} and set allowed_chat_ids and allowed_sender_ids (see the README)."
   echo "3. sudo systemctl restart message-box"
 fi
 echo

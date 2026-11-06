@@ -33,6 +33,10 @@ def test_example_config_loads():
     assert config.button.max_record_seconds == 180
     assert config.telegram.allowed_chat_ids == ()
     assert config.telegram.family_chat_id is None
+    assert config.telegram.allowed_sender_ids == ()
+    assert config.telegram.allow_any_sender is False
+    assert config.telegram.max_incoming_bytes == 8 * 1024 * 1024
+    assert config.telegram.max_incoming_seconds == 600
     assert config.audio.play_empty_tone is False
     assert config.playback.rewind_enabled is True
     assert config.playback.rewind_seconds == 10
@@ -252,6 +256,44 @@ def test_lamp_blink_timings_must_be_positive(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("[lamp]\nunheard_off_seconds = 0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unheard_off_seconds"):
+        load_config(path)
+
+
+def test_sender_allowlist_defaults_when_the_keys_are_omitted(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[telegram]\nallowed_chat_ids = [-1000000000001]\n",
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.telegram.allowed_chat_ids == (-1000000000001,)
+    assert config.telegram.allowed_sender_ids == ()
+    assert config.telegram.allow_any_sender is False
+
+
+def test_sender_ids_must_be_positive_integers(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[telegram]\nallowed_sender_ids = [0]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="allowed_sender_ids"):
+        load_config(path)
+    path.write_text(
+        '[telegram]\nallowed_sender_ids = ["123456789"]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="allowed_sender_ids"):
+        load_config(path)
+
+
+def test_allow_any_sender_must_be_a_boolean(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[telegram]\nallow_any_sender = "yes"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="true or false"):
         load_config(path)
 
 

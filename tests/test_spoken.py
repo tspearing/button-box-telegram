@@ -117,14 +117,16 @@ class _File:
 
 class _Voice:
     duration = 3
+    file_size = 1200
 
     async def get_file(self) -> _File:
         return _File()
 
 
 class _Message:
-    def __init__(self, message_id: int) -> None:
+    def __init__(self, message_id: int, user=None) -> None:
         self.message_id = message_id
+        self.from_user = user
         self.voice = _Voice()
         self.audio = None
         self.document = None
@@ -164,6 +166,7 @@ def test_incoming_note_stores_the_sender_and_keeps_it(tmp_path):
     bridge = TelegramBridge(
         token="123456:TEST",
         allowed={CHAT},
+        allowed_senders={MOM, DAD, GRANDMA},
         inbox=inbox,
         on_queued=queued,
         download_dir=tmp_path / "tmp",
@@ -171,24 +174,16 @@ def test_incoming_note_stores_the_sender_and_keeps_it(tmp_path):
     )
 
     async def deliver() -> None:
+        mom = _User(MOM, "Mom", "mom_example")
+        dad = _User(DAD, None, "dad_example")
+        grandma = _User(GRANDMA, "", "grandma_example")
+        await bridge.on_media(_Update(_Message(1, mom), _Chat(CHAT), mom), None)
+        await bridge.on_media(_Update(_Message(2, dad), _Chat(CHAT), dad), None)
+        await bridge.on_media(_Update(_Message(3, grandma), _Chat(CHAT), grandma), None)
+        bot = _User(1, "Bot", is_bot=True)
+        await bridge.on_media(_Update(_Message(4, bot), _Chat(CHAT), bot), None)
         await bridge.on_media(
-            _Update(_Message(1), _Chat(CHAT), _User(MOM, "Mom", "mom_example")),
-            None,
-        )
-        await bridge.on_media(
-            _Update(_Message(2), _Chat(CHAT), _User(DAD, None, "dad_example")),
-            None,
-        )
-        await bridge.on_media(
-            _Update(_Message(3), _Chat(CHAT), _User(GRANDMA, "", "grandma_example")),
-            None,
-        )
-        await bridge.on_media(
-            _Update(_Message(4), _Chat(CHAT), _User(1, "Bot", is_bot=True)),
-            None,
-        )
-        await bridge.on_media(
-            _Update(_Message(5), _Chat(-1000000000002), _User(MOM, "Mom")),
+            _Update(_Message(5, mom), _Chat(-1000000000002), mom),
             None,
         )
 

@@ -4,7 +4,7 @@ import logging
 from io import StringIO
 from pathlib import Path
 
-from messagebox.logging_setup import RedactSecrets
+from messagebox.logging_setup import RedactingFormatter, RedactSecrets
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,6 +18,8 @@ def test_secret_files_are_gitignored_and_examples_are_empty():
     assert token_lines == ["TELEGRAM_BOT_TOKEN="]
     config = (ROOT / "config.example.toml").read_text(encoding="utf-8")
     assert "allowed_chat_ids = []" in config
+    assert "allowed_sender_ids = []" in config
+    assert "allow_any_sender = false" in config
     assert "TELEGRAM_BOT_TOKEN" not in config
 
 
@@ -32,6 +34,14 @@ def test_log_lines_do_not_keep_the_token(monkeypatch):
     handler.addFilter(RedactSecrets())
     logger.addHandler(handler)
     logger.info("request failed for %s", "12345:SECRET")
+    text = stream.getvalue()
+    assert "SECRET" not in text
+    assert "***" in text
+    handler.setFormatter(RedactingFormatter("%(message)s"))
+    try:
+        raise RuntimeError("https://api.telegram.org/bot12345:SECRET/getUpdates")
+    except RuntimeError:
+        logger.exception("request failed")
     text = stream.getvalue()
     assert "SECRET" not in text
     assert "***" in text
