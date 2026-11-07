@@ -95,6 +95,17 @@ allowed_chat_ids = []
 # Uncomment after you know the family group id. If the allowlist has exactly
 # one chat, you can leave this line out and that chat is used.
 # family_chat_id = CHAT_ID
+# Who may send a note into an allowed chat. Positive user ids, not names.
+# A private chat with the bot: /chatid replies with that person's user id.
+# Listing someone here does not allow a chat that is not in allowed_chat_ids.
+# Empty means accept nobody. The installer does not fill this in for you.
+allowed_sender_ids = []
+# true hears every non-bot person in an allowed chat (the old rule). Off by default.
+allow_any_sender = false
+# Refuse a download larger than this, or longer than this many seconds when
+# Telegram says how long it is. 8388608 is 8 MiB.
+max_incoming_bytes = 8388608
+max_incoming_seconds = 600
 
 [paths]
 data_dir = "/var/lib/message-box"

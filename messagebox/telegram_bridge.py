@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from messagebox.policy import should_accept_chat
+from messagebox.policy import authenticated_sender_id, should_accept_chat, should_accept_sender
 from messagebox.queue_store import DiskQueue, Inbox
 
 log = logging.getLogger("messagebox.telegram")
@@ -30,15 +30,24 @@ class TelegramBridge:
         download_dir: Path,
         on_title: Callable[[int, str], Awaitable[None]] | None = None,
         on_incoming_meta: Callable[[dict], Awaitable[None]] | None = None,
+        allowed_senders: set[int] | None = None,
+        allow_any_sender: bool = False,
+        max_incoming_bytes: int = 8 * 1024 * 1024,
+        max_incoming_seconds: float = 600,
     ) -> None:
         self.token = token
         self.allowed = set(allowed)
+        self.allowed_senders = set(allowed_senders or ())
+        self.allow_any_sender = bool(allow_any_sender)
+        self.max_incoming_bytes = int(max_incoming_bytes)
+        self.max_incoming_seconds = float(max_incoming_seconds)
         self.inbox = inbox
         self._on_queued = on_queued
         self.download_dir = download_dir
         self._on_title = on_title
         self._on_incoming_meta = on_incoming_meta
         self._ignored: set[int] = set()
+        self._ignored_senders: set[tuple[int, int]] = set()
 
     def build(self):
         from telegram.ext import Application, CommandHandler, MessageHandler, filters
@@ -82,57 +91,97 @@ class TelegramBridge:
             parse_mode="Markdown",
         )
 
+    def _accepts(self, chat_id: int, sender_id: int | None) -> bool:
+        """Both the chat and the authenticated sender must pass."""
+        if not should_accept_chat(chat_id, self.allowed):
+            return False
+        return should_accept_sender(
+            sender_id,
+            self.allowed_senders,
+            allow_any_sender=self.allow_any_sender,
+        )
+
     async def on_media(self, update, context) -> None:
-        message = update.effective_message
-        chat = update.effective_chat
-        user = update.effective_user
+        message = getattr(update, "effective_message", None)
+        chat = getattr(update, "effective_chat", None)
         if message is None or chat is None:
             return
-        if user is not None and user.is_bot:
+        chat_id = _int_id(getattr(chat, "id", None))
+        sender_id = authenticated_sender_id(message)
+        if chat_id is None or not should_accept_chat(chat_id, self.allowed):
+            if chat_id is not None and chat_id not in self._ignored:
+                self._ignored.add(chat_id)
+                log.info("ignoring audio from chat %s (not on the allowlist)", chat_id)
             return
-        if not should_accept_chat(chat.id, self.allowed):
-            if chat.id not in self._ignored:
-                self._ignored.add(chat.id)
-                log.info("ignoring audio from chat %s (not on the allowlist)", chat.id)
+        if not should_accept_sender(
+            sender_id,
+            self.allowed_senders,
+            allow_any_sender=self.allow_any_sender,
+        ):
+            key = (chat_id, sender_id or 0)
+            if key not in self._ignored_senders:
+                self._ignored_senders.add(key)
+                log.info(
+                    "ignoring audio in chat %s from sender %s (sender not approved)",
+                    chat_id,
+                    sender_id if sender_id is not None else "none",
+                )
             return
         attachment, kind = _attachment(message)
         if attachment is None:
             return
+        if not _within_limits(
+            attachment,
+            max_bytes=self.max_incoming_bytes,
+            max_seconds=self.max_incoming_seconds,
+        ):
+            log.info("ignoring audio in chat %s (size or length)", chat_id)
+            return
+        message_id = _int_id(getattr(message, "message_id", None))
+        if message_id is None or message_id < 0:
+            log.info("ignoring audio in chat %s (bad message id)", chat_id)
+            return
+        # Authorization, size, and the message id are settled before any download.
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        dest = self.download_dir / f"incoming-{chat.id}-{message.message_id}"
+        dest: Path | None = None
         try:
             tg_file = await attachment.get_file()
-            suffix = Path(tg_file.file_path or "").suffix.lower()
-            if suffix not in _AUDIO_SUFFIXES:
-                suffix = ".ogg"
-            dest = dest.with_suffix(suffix)
+            suffix = _safe_suffix(getattr(tg_file, "file_path", None))
+            dest = safe_incoming_path(self.download_dir, chat_id, message_id, suffix)
+            if dest is None:
+                log.info("ignoring audio in chat %s (unsafe path)", chat_id)
+                return
             await tg_file.download_to_drive(custom_path=str(dest))
+            size = dest.stat().st_size if dest.is_file() else 0
+            if size <= 0 or size > self.max_incoming_bytes:
+                log.info("ignoring audio in chat %s (downloaded size)", chat_id)
+                return
+            user = getattr(message, "from_user", None)
             label = None
-            sender_id = None
             if user is not None:
-                sender_id = user.id
-                label = user.first_name or user.username
+                label = getattr(user, "first_name", None) or getattr(user, "username", None)
             item = self.inbox.enqueue(
                 dest,
                 {
-                    "source_chat_id": chat.id,
+                    "source_chat_id": chat_id,
                     "kind": kind,
                     "sender_id": sender_id,
                     "sender_name": label,
                     "sender_label": label,
                     "created_at": time.time(),
-                    "duration": getattr(attachment, "duration", None),
+                    "duration": _duration_value(attachment),
                 },
             )
         except Exception as exc:
-            log.warning("could not save audio from chat %s (%s)", chat.id, type(exc).__name__)
+            log.warning("could not save audio from chat %s (%s)", chat_id, type(exc).__name__)
             return
         finally:
-            dest.unlink(missing_ok=True)
+            if dest is not None:
+                dest.unlink(missing_ok=True)
         log.info(
             "queued %s from chat %s as %s (%s waiting)",
             kind,
-            chat.id,
+            chat_id,
             item.id,
             len(self.inbox),
         )
@@ -145,9 +194,13 @@ class TelegramBridge:
         await self._note_title(chat)
 
     async def on_seen(self, update, context) -> None:
-        """Remember a group title from any allowed message. Does not reply."""
-        chat = update.effective_chat
-        if chat is None:
+        """Remember a group title from an approved sender. Does not reply."""
+        message = getattr(update, "effective_message", None)
+        chat = getattr(update, "effective_chat", None)
+        if message is None or chat is None:
+            return
+        chat_id = _int_id(getattr(chat, "id", None))
+        if chat_id is None or not self._accepts(chat_id, authenticated_sender_id(message)):
             return
         await self._note_title(chat)
 
@@ -177,6 +230,72 @@ def _media_filter(filters):
     if document_audio is not None:
         return media | document_audio
     return media
+
+
+def _int_id(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _safe_suffix(file_path: Any) -> str:
+    """Extension of the basename only. The Telegram path is never opened locally."""
+    name = Path(str(file_path or "")).name
+    suffix = Path(name).suffix.lower()
+    if suffix in _AUDIO_SUFFIXES and "/" not in suffix and "\\" not in suffix:
+        return suffix
+    return ".ogg"
+
+
+def safe_incoming_path(download_dir: Path, chat_id: int, message_id: int, suffix: str) -> Path | None:
+    """A file under ``download_dir`` built only from checked integers."""
+    if _int_id(chat_id) is None or _int_id(message_id) is None or message_id < 0:
+        return None
+    if suffix not in _AUDIO_SUFFIXES:
+        return None
+    root = Path(download_dir).resolve()
+    name = f"incoming-{chat_id}-{message_id}{suffix}"
+    if name != Path(name).name:
+        return None
+    dest = (root / name).resolve()
+    try:
+        dest.relative_to(root)
+    except ValueError:
+        return None
+    return dest
+
+
+def _file_size(attachment) -> int | None:
+    size = getattr(attachment, "file_size", None)
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        return None
+    return size
+
+
+def _duration_value(attachment) -> float | None:
+    raw = getattr(attachment, "duration", None)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if value < 0:
+        return None
+    return value
+
+
+def _within_limits(attachment, *, max_bytes: int, max_seconds: float) -> bool:
+    size = _file_size(attachment)
+    if size is None or size > max_bytes:
+        return False
+    duration = _duration_value(attachment)
+    if duration is None:
+        raw = getattr(attachment, "duration", None)
+        if raw is not None:
+            return False
+    elif duration > max_seconds:
+        return False
+    return True
 
 
 def _attachment(message) -> tuple[Any, str]:

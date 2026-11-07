@@ -232,6 +232,12 @@ class Runtime:
             )
         log.info("audio:\n%s", self.audio.describe())
 
+        telegram = self.config.telegram
+        if not telegram.allow_any_sender and not telegram.allowed_sender_ids:
+            log.warning(
+                "allowed_sender_ids is empty, so incoming notes are ignored until "
+                "sender ids are added. allow_any_sender is off."
+            )
         bridge = TelegramBridge(
             token=self.token,
             allowed=self._allowed,
@@ -240,6 +246,10 @@ class Runtime:
             download_dir=data / "tmp",
             on_title=self._on_chat_title,
             on_incoming_meta=self._on_incoming_meta,
+            allowed_senders=set(telegram.allowed_sender_ids),
+            allow_any_sender=telegram.allow_any_sender,
+            max_incoming_bytes=telegram.max_incoming_bytes,
+            max_incoming_seconds=telegram.max_incoming_seconds,
         )
         application = bridge.build()
         self._loop = asyncio.get_running_loop()

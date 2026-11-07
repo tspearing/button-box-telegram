@@ -66,10 +66,22 @@ class AudioConfig:
     lead_in_level_db: float = -60.0
 
 
+# Bot API downloads are limited to 20 MiB. The default is lower so one
+# approved note cannot fill the card.
+DEFAULT_MAX_INCOMING_BYTES = 8 * 1024 * 1024
+BOT_API_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class TelegramConfig:
     allowed_chat_ids: tuple[int, ...] = ()
     family_chat_id: int | None = None
+    # Positive Telegram user ids. Empty rejects every sender unless
+    # allow_any_sender is set. Listing a user does not allow a new chat.
+    allowed_sender_ids: tuple[int, ...] = ()
+    allow_any_sender: bool = False
+    max_incoming_bytes: int = DEFAULT_MAX_INCOMING_BYTES
+    max_incoming_seconds: int = 600
 
 
 @dataclass(frozen=True)
@@ -354,7 +366,8 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
         family = int(family)
         if family == 0:
             family = None
-    allowed = tuple(int(item) for item in telegram.get("allowed_chat_ids", []))
+    allowed = _id_list(telegram.get("allowed_chat_ids", []), "allowed_chat_ids")
+    sender_ids = _id_list(telegram.get("allowed_sender_ids", []), "allowed_sender_ids")
     return AppConfig(
         button=ButtonConfig(
             pin=int(button.get("pin", 17)),
@@ -389,7 +402,14 @@ def _from_tables(data: dict, *, dev_mode: bool) -> AppConfig:
             lead_in_mode=str(audio.get("lead_in_mode", "noise")).strip().lower(),
             lead_in_level_db=float(audio.get("lead_in_level_db", -60.0)),
         ),
-        telegram=TelegramConfig(allowed_chat_ids=allowed, family_chat_id=family),
+        telegram=TelegramConfig(
+            allowed_chat_ids=allowed,
+            family_chat_id=family,
+            allowed_sender_ids=sender_ids,
+            allow_any_sender=_strict_bool(telegram.get("allow_any_sender"), False),
+            max_incoming_bytes=int(telegram.get("max_incoming_bytes", DEFAULT_MAX_INCOMING_BYTES)),
+            max_incoming_seconds=int(telegram.get("max_incoming_seconds", 600)),
+        ),
         paths=PathsConfig(
             data_dir=Path(paths.get("data_dir", str(DEFAULT_DATA_DIR))),
             env_file=Path(paths.get("env_file", str(DEFAULT_ENV_FILE))),
@@ -467,6 +487,14 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("announce.engine must be 'piper' or 'espeak'")
     if not 0 < config.announce.piper_length_scale <= 3:
         raise ValueError("announce.piper_length_scale must be greater than 0 and at most 3")
+    if any(chat_id == 0 for chat_id in config.telegram.allowed_chat_ids):
+        raise ValueError("allowed_chat_ids cannot contain 0")
+    if any(sender_id <= 0 for sender_id in config.telegram.allowed_sender_ids):
+        raise ValueError("allowed_sender_ids must be positive user ids")
+    if not 1 <= config.telegram.max_incoming_bytes <= BOT_API_MAX_DOWNLOAD_BYTES:
+        raise ValueError("telegram.max_incoming_bytes must be from 1 to 20971520")
+    if not 1 <= config.telegram.max_incoming_seconds <= 3600:
+        raise ValueError("telegram.max_incoming_seconds must be from 1 to 3600")
     if config.playback.rewind_seconds <= 0:
         raise ValueError("playback.rewind_seconds must be positive")
     if not 0 <= config.playback.double_tap_window_ms <= 2000:
@@ -476,6 +504,33 @@ def _validate(config: AppConfig) -> None:
         if card.uid in seen:
             raise ValueError(f"card uid {card.uid} is listed more than once")
         seen.add(card.uid)
+
+
+def _strict_bool(value, default: bool) -> bool:
+    """Missing means the default. Any other non-boolean is a config error.
+
+    ``bool("false")`` is True, so a quoted word must not turn a security
+    switch on.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ValueError("expected true or false, not a string")
+
+
+def _id_list(raw, label: str) -> tuple[int, ...]:
+    """A TOML array of integers. Anything else refuses to start."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(f"{label} must be a list of numbers")
+    parsed: list[int] = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise ValueError(f"{label} entries must be integers")
+        parsed.append(item)
+    return tuple(parsed)
 
 
 def _senders(raw) -> dict[int, str]:

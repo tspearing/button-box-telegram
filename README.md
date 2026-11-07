@@ -232,9 +232,16 @@ Set both lines. Replace `CHAT_ID` with the number `/chatid` printed. A group id 
 [telegram]
 allowed_chat_ids = [CHAT_ID]
 family_chat_id = CHAT_ID
+allowed_sender_ids = [123456789]
 ```
 
-`allowed_chat_ids` is the security boundary. Voice notes from any other chat are ignored, and the box will not send anywhere else. An empty list does **not** mean "allow everyone"; it means "accept nobody".
+`allowed_chat_ids` is who the box will listen to and send to. Voice notes from any other chat are ignored, and the box will not send anywhere else. An empty list does **not** mean "allow everyone"; it means "accept nobody".
+
+`allowed_sender_ids` is the same idea for people. A note is saved only when the chat is listed **and** the Telegram user who actually sent it is listed. A name, a forwarded message, or an anonymous/channel post does not count. Listing a person does not allow a new chat. An empty sender list means accept nobody, until you add ids. `allow_any_sender = true` is the explicit old rule (any non-bot member of an allowed chat) and it is off unless you set it.
+
+To learn a user id, that person opens a **private** chat with the bot and sends `/chatid`. The reply is their user id (a positive number). Put that number in `allowed_sender_ids`, not in `allowed_chat_ids`, unless you also want notes that arrive in that private chat. The numbers in this file are placeholders.
+
+This box cannot stop messages that Telegram delivers to someone's phone app. It only decides what the box itself downloads and plays.
 
 If the list has exactly one chat, you can leave `family_chat_id` out and that chat is used.
 
@@ -441,7 +448,11 @@ The tests cover the queue (order, and that it is still there after a new process
 | `playback.rewind_enabled` | `true` | Two quick taps while a note is playing jump backward. |
 | `playback.rewind_seconds` | `10` | How far those taps jump. Past the start, the note restarts at 0. |
 | `playback.double_tap_window_ms` | `375` | Max time from the end of one tap to the end of the next, while a note is playing. |
-| `telegram.allowed_chat_ids` | empty | Chats that may send, and the only chats we will send to. |
+| `telegram.allowed_chat_ids` | empty | Chats that may send, and the only chats we will send to. Empty means nobody. |
+| `telegram.allowed_sender_ids` | empty | User ids that may send into those chats. Empty means nobody. Does not add chats. |
+| `telegram.allow_any_sender` | `false` | `true` hears every non-bot member of an allowed chat. Still ignores anonymous senders. |
+| `telegram.max_incoming_bytes` | `8388608` | Largest download (8 MiB). Bigger files are not saved. |
+| `telegram.max_incoming_seconds` | `600` | Longest incoming note when Telegram reports a duration. |
 | `nfc.i2c_bus` / `i2c_address` | `1` / `36` | PN532 bus and address. 36 is 0x24. |
 | `announce.engine` | `piper` | `piper` or `espeak`. Missing Piper falls back to espeak-ng. |
 | `announce.piper_voice` | `/opt/message-box/voices/en_US-lessac-medium.onnx` | Piper model. The `.onnx.json` must sit beside it. |
